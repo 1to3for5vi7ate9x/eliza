@@ -5,7 +5,7 @@ import { DiscordClientInterface } from "@elizaos/client-discord";
 import { FarcasterAgentClient } from "@elizaos/client-farcaster";
 import { LensAgentClient } from "@elizaos/client-lens";
 import { SlackClientInterface } from "@elizaos/client-slack";
-import { TelegramClientInterface } from "@elizaos/client-telegram";
+import { start as telegramStart, stop as telegramStop } from "@elizaos/client-telegram";
 import { TwitterClientInterface } from "@elizaos/client-twitter";
 import {
     AgentRuntime,
@@ -408,8 +408,8 @@ export async function initializeClients(
     }
 
     if (clientTypes.includes(Clients.TELEGRAM)) {
-        const telegramClient = await TelegramClientInterface.start(runtime);
-        if (telegramClient) clients.telegram = telegramClient;
+        await telegramStart(runtime);
+        clients.telegram = { start: telegramStart, stop: telegramStop };
     }
 
     if (clientTypes.includes(Clients.TWITTER)) {
@@ -730,7 +730,7 @@ async function startAgent(
     }
 }
 
-const checkPortAvailable = (port: number): Promise<boolean> => {
+function checkPortAvailable(port: number): Promise<boolean> {
     return new Promise((resolve) => {
         const server = net.createServer();
 
@@ -747,7 +747,7 @@ const checkPortAvailable = (port: number): Promise<boolean> => {
 
         server.listen(port);
     });
-};
+}
 
 const startAgents = async () => {
     const directClient = new DirectClient();

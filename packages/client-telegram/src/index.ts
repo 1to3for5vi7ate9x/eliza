@@ -1,27 +1,35 @@
-import { elizaLogger } from "@elizaos/core";
-import { Client, IAgentRuntime } from "@elizaos/core";
-import { TelegramClient } from "./telegramClient.ts";
-import { validateTelegramConfig } from "./environment.ts";
+import { elizaLogger } from '@elizaos/core';
+import type { IAgentRuntime } from '@elizaos/core';
+import { TelegramUserClient } from './telegramUserClient';
 
-export const TelegramClientInterface: Client = {
-    start: async (runtime: IAgentRuntime) => {
-        await validateTelegramConfig(runtime);
+export interface TelegramClientInterface {
+    start(runtime: IAgentRuntime): Promise<void>;
+    stop(runtime: IAgentRuntime): Promise<void>;
+}
 
-        const tg = new TelegramClient(
-            runtime,
-            runtime.getSetting("TELEGRAM_BOT_TOKEN")
-        );
+let client: TelegramUserClient | null = null;
 
-        await tg.start();
+export async function start(runtime: IAgentRuntime): Promise<void> {
+    try {
+        elizaLogger.log('Starting Telegram client...');
+        client = new TelegramUserClient(runtime);
+        await client.start();
+    } catch (error) {
+        elizaLogger.error('Failed to start Telegram client:', error);
+        throw error;
+    }
+}
 
-        elizaLogger.success(
-            `✅ Telegram client successfully started for character ${runtime.character.name}`
-        );
-        return tg;
-    },
-    stop: async (_runtime: IAgentRuntime) => {
-        elizaLogger.warn("Telegram client does not support stopping yet");
-    },
-};
+export async function stop(_runtime: IAgentRuntime): Promise<void> {
+    try {
+        if (client) {
+            await client.stop();
+            client = null;
+        }
+    } catch (error) {
+        elizaLogger.error('Failed to stop Telegram client:', error);
+        throw error;
+    }
+}
 
-export default TelegramClientInterface;
+export default { start, stop };
