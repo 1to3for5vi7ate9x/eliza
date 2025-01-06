@@ -1,4 +1,4 @@
-import { elizaLogger, ServiceType, composeRandomUser } from "@elizaos/core";
+import { elizaLogger, ServiceType, composeRandomUser, composeContext } from "@elizaos/core";
 import { getEmbeddingZeroVector } from "@elizaos/core";
 import {
     Content,
