@@ -1,19 +1,25 @@
-import { elizaLogger, ServiceType, composeRandomUser, composeContext } from "@elizaos/core";
-import { getEmbeddingZeroVector } from "@elizaos/core";
 import {
     Content,
-    HandlerCallback,
+    Memory,
+    State,
+    ModelClass,
+    elizaLogger,
+    ServiceType,
+    composeRandomUser,
+    composeContext,
+    getEmbeddingZeroVector,
+    stringToUuid,
     IAgentRuntime,
     IImageDescriptionService,
-    Memory,
-    ModelClass,
-    State,
+    generateMessageResponse,
+    generateShouldRespond,
+    messageCompletionFooter,
+    shouldRespondFooter,
     UUID,
-    Media,
-} from "@elizaos/core";
-import { stringToUuid } from "@elizaos/core";
-import { generateMessageResponse, generateShouldRespond } from "@elizaos/core";
-import { messageCompletionFooter, shouldRespondFooter } from "@elizaos/core";
+    Media
+} from '@elizaos/core';
+import { v4 as uuidv4 } from 'uuid';
+import { Message } from './types.ts';
 import { cosineSimilarity, escapeMarkdown } from "./utils";
 import {
     MESSAGE_CONSTANTS,
@@ -44,7 +50,7 @@ export class MessageManager {
     private interestChats: {
         [key: string]: {
             lastMessageSent: number;
-            messages: { userId: UUID; userName: string; content: Content }[];
+            messages: { userId: string; userName: string; content: Content }[];
             contextSimilarityThreshold?: number;
         };
     } = {};
@@ -56,53 +62,126 @@ export class MessageManager {
 
     async handleMessage(message: Message): Promise<Content | null> {
         try {
-            elizaLogger.log('Processing message:', message);
+            elizaLogger.log('🔄 Starting message processing:', {
+                text: message.text,
+                chatId: message.chat.id,
+                userId: message.from.id
+            });
 
             // Create memory for the message
-            const memory = await this.createMessageMemory(message);
-            elizaLogger.log('Created memory:', memory);
-            
+            let memory: Memory;
+            try {
+                memory = await this.createMessageMemory(message);
+                elizaLogger.log('✅ Memory created successfully:', memory);
+            } catch (error) {
+                elizaLogger.error('❌ Failed to create message memory:', {
+                    error: error instanceof Error ? error.message : 'Unknown error',
+                    stack: error instanceof Error ? error.stack : undefined
+                });
+                throw new Error('Memory creation failed');
+            }
+
             // Get state with message context
-            const state = await this.runtime.composeState(memory);
-            elizaLogger.log('Composed state');
-            
+            let state: State;
+            try {
+                state = await this.runtime.composeState(memory);
+                elizaLogger.log('✅ State composed successfully');
+            } catch (error) {
+                elizaLogger.error('❌ Failed to compose state:', {
+                    error: error instanceof Error ? error.message : 'Unknown error',
+                    stack: error instanceof Error ? error.stack : undefined
+                });
+                throw new Error('State composition failed');
+            }
+
             // Use AI to decide whether to respond
-            const shouldRespondContext = this.composeResponseContext(state);
-            elizaLogger.log('Composed response context');
-            
-            const shouldRespond = await this.shouldRespondToMessage(shouldRespondContext);
-            elizaLogger.log('Should respond decision:', shouldRespond);
+            let shouldRespond: string;
+            try {
+                const shouldRespondContext = this.composeResponseContext(state);
+                elizaLogger.log('📝 Response context composed:', shouldRespondContext);
+                shouldRespond = await this.shouldRespondToMessage(shouldRespondContext);
+                elizaLogger.log('🤔 Response decision:', shouldRespond);
+            } catch (error) {
+                elizaLogger.error('❌ Failed to determine if should respond:', {
+                    error: error instanceof Error ? error.message : 'Unknown error',
+                    stack: error instanceof Error ? error.stack : undefined
+                });
+                throw new Error('Response decision failed');
+            }
 
             if (shouldRespond !== 'RESPOND') {
-                elizaLogger.log('Decided not to respond');
+                elizaLogger.log('⏭️ Decided not to respond');
                 return null;
             }
 
             // Generate response using character's personality
-            const messageContext = this.composeMessageContext(state);
-            elizaLogger.log('Composed message context');
-            
-            const response = await this.generateResponse(messageContext);
-            elizaLogger.log('Generated response:', response);
+            let response: any;
+            try {
+                const messageContext = this.composeMessageContext(state);
+                elizaLogger.log('📝 Message context composed:', messageContext);
+                response = await this.generateResponse(messageContext);
+                elizaLogger.log('✅ Raw response generated:', response);
+
+                // Parse response if it's a JSON string
+                if (typeof response === 'string' && response.trim().startsWith('{')) {
+                    try {
+                        response = JSON.parse(response);
+                    } catch (e) {
+                        elizaLogger.warn('⚠️ Failed to parse response as JSON:', response);
+                    }
+                }
+
+                // Extract text from response object
+                let finalText: string;
+                if (typeof response === 'object' && response !== null) {
+                    if (response.text) {
+                        finalText = response.text;
+                    } else if (response.content?.text) {
+                        finalText = response.content.text;
+                    } else {
+                        elizaLogger.warn('⚠️ No text field found in response object:', response);
+                        finalText = JSON.stringify(response);
+                    }
+                } else {
+                    finalText = String(response);
+                }
+
+                elizaLogger.log('✅ Final formatted response:', finalText);
+                response = finalText;
+
+            } catch (error) {
+                elizaLogger.error('❌ Failed to generate response:', {
+                    error: error instanceof Error ? error.message : 'Unknown error',
+                    stack: error instanceof Error ? error.stack : undefined,
+                    state: state
+                });
+                throw new Error('Response generation failed');
+            }
 
             if (!response) {
-                elizaLogger.error('Failed to generate response');
+                elizaLogger.error('❌ No response generated');
                 return null;
             }
 
             // Update chat state
-            this.updateChatState(message, response);
-            elizaLogger.log('Updated chat state');
-
-            return { text: response };
-        } catch (error) {
-            elizaLogger.error('Error handling message:', error);
-            if (error instanceof Error) {
-                elizaLogger.error('Error details:', {
-                    message: error.message,
-                    stack: error.stack
+            try {
+                this.updateChatState(message, response);
+                elizaLogger.log('✅ Chat state updated successfully');
+            } catch (error) {
+                elizaLogger.error('❌ Failed to update chat state:', {
+                    error: error instanceof Error ? error.message : 'Unknown error',
+                    stack: error instanceof Error ? error.stack : undefined
                 });
             }
+
+            elizaLogger.success('✨ Message handled successfully');
+            return { text: response };
+        } catch (error) {
+            elizaLogger.error('❌ Critical error in handleMessage:', {
+                error: error instanceof Error ? error.message : 'Unknown error',
+                stack: error instanceof Error ? error.stack : undefined,
+                message: message
+            });
             return null;
         }
     }
@@ -111,7 +190,7 @@ export class MessageManager {
         try {
             const userId = stringToUuid(message.from.id);
             const roomId = stringToUuid(message.chat.id + "-" + this.runtime.agentId);
-            
+
             const content: Content = {
                 text: message.text,
                 source: 'telegram',
