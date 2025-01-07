@@ -27,6 +27,67 @@ import {
     RESPONSE_CHANCES,
 } from "./constants";
 
+// Message handler template for Telegram
+export const telegramMessageHandlerTemplate = `
+# Areas of Expertise
+{{knowledge}}
+
+# About {{agentName}}:
+{{bio}}
+{{lore}}
+{{topics}}
+
+{{providers}}
+
+{{characterPostExamples}}
+
+{{postDirections}}
+
+Recent interactions:
+{{recentPostInteractions}}
+
+# TASK: Generate a response in the voice, style and perspective of {{agentName}} while using the conversation history as context:
+
+Current Message:
+{{currentPost}}
+
+Previous Messages:
+{{formattedConversation}}
+
+# INSTRUCTIONS: Generate a response in the voice, style and perspective of {{agentName}}. Stay in character at all times.
+` + messageCompletionFooter;
+
+// Should respond template for Telegram
+export const telegramShouldRespondTemplate = `
+# INSTRUCTIONS: Determine if {{agentName}} should respond to the message and participate in the conversation.
+
+Response options are [RESPOND], [IGNORE] and [STOP].
+
+For messages:
+- {{agentName}} should RESPOND to messages directed at them
+- {{agentName}} should RESPOND to conversations relevant to their background
+- {{agentName}} should IGNORE irrelevant messages
+- {{agentName}} should IGNORE very short messages unless directly addressed
+- {{agentName}} should STOP if asked to stop
+- {{agentName}} should STOP if conversation is concluded
+- {{agentName}} is in a chat room and wants to be conversational, but not annoying
+
+IMPORTANT:
+- {{agentName}} is sensitive about being annoying, so if there is any doubt, it is better to IGNORE than to RESPOND
+- {{agentName}} should err on the side of IGNORE rather than RESPOND if in doubt
+
+Recent Messages:
+{{recentPosts}}
+
+Current Message:
+{{currentPost}}
+
+Previous Messages:
+{{formattedConversation}}
+
+# INSTRUCTIONS: Respond with [RESPOND] if {{agentName}} should respond, or [IGNORE] if {{agentName}} should not respond to the last message and [STOP] if {{agentName}} should stop participating in the conversation.
+` + shouldRespondFooter;
+
 const MAX_MESSAGE_LENGTH = 4096; // Telegram's max message length
 
 export interface Message {
@@ -97,9 +158,19 @@ export class MessageManager {
             // Use AI to decide whether to respond
             let shouldRespond: string;
             try {
-                const shouldRespondContext = this.composeResponseContext(state);
+                const shouldRespondContext = composeContext({
+                    state,
+                    template: this.runtime.character?.templates?.telegramShouldRespondTemplate || 
+                             this.runtime.character?.templates?.shouldRespondTemplate || 
+                             telegramShouldRespondTemplate
+                });
                 elizaLogger.log('📝 Response context composed:', shouldRespondContext);
-                shouldRespond = await this.shouldRespondToMessage(shouldRespondContext);
+                
+                shouldRespond = await generateShouldRespond({
+                    runtime: this.runtime,
+                    context: shouldRespondContext,
+                    modelClass: ModelClass.SMALL
+                });
                 elizaLogger.log('🤔 Response decision:', shouldRespond);
             } catch (error) {
                 elizaLogger.error('❌ Failed to determine if should respond:', {
@@ -115,39 +186,25 @@ export class MessageManager {
             }
 
             // Generate response using character's personality
-            let response: any;
+            let response: string;
             try {
-                const messageContext = this.composeMessageContext(state);
+                // Get character's template and system prompt
+                const messageContext = composeContext({
+                    state,
+                    template: this.runtime.character?.templates?.telegramMessageHandlerTemplate ||
+                             this.runtime.character?.templates?.messageHandlerTemplate ||
+                             telegramMessageHandlerTemplate
+                });
+                
                 elizaLogger.log('📝 Message context composed:', messageContext);
-                response = await this.generateResponse(messageContext);
+                
+                response = await generateMessageResponse({
+                    runtime: this.runtime,
+                    context: messageContext,
+                    modelClass: ModelClass.MEDIUM
+                });
+
                 elizaLogger.log('✅ Raw response generated:', response);
-
-                // Parse response if it's a JSON string
-                if (typeof response === 'string' && response.trim().startsWith('{')) {
-                    try {
-                        response = JSON.parse(response);
-                    } catch (e) {
-                        elizaLogger.warn('⚠️ Failed to parse response as JSON:', response);
-                    }
-                }
-
-                // Extract text from response object
-                let finalText: string;
-                if (typeof response === 'object' && response !== null) {
-                    if (response.text) {
-                        finalText = response.text;
-                    } else if (response.content?.text) {
-                        finalText = response.content.text;
-                    } else {
-                        elizaLogger.warn('⚠️ No text field found in response object:', response);
-                        finalText = JSON.stringify(response);
-                    }
-                } else {
-                    finalText = String(response);
-                }
-
-                elizaLogger.log('✅ Final formatted response:', finalText);
-                response = finalText;
 
             } catch (error) {
                 elizaLogger.error('❌ Failed to generate response:', {
@@ -216,92 +273,41 @@ export class MessageManager {
         }
     }
 
-    private composeResponseContext(state: State): string {
-        try {
-            const context = composeContext({
-                state,
-                template:
-                    this.runtime.character.templates?.telegramShouldRespondTemplate ||
-                    this.runtime.character?.templates?.shouldRespondTemplate ||
-                    composeRandomUser(shouldRespondFooter, 2),
-            });
-            elizaLogger.log('Response context composed');
-            return context;
-        } catch (error) {
-            elizaLogger.error('Error composing response context:', error);
-            throw error;
-        }
-    }
-
-    private async shouldRespondToMessage(context: string): Promise<string> {
-        try {
-            const response = await generateShouldRespond({
-                runtime: this.runtime,
-                context,
-                modelClass: ModelClass.SMALL,
-            });
-            elizaLogger.log('Should respond decision made:', response);
-            return response;
-        } catch (error) {
-            elizaLogger.error('Error in shouldRespondToMessage:', error);
-            throw error;
-        }
-    }
-
-    private composeMessageContext(state: State): string {
-        try {
-            const context = composeContext({
-                state,
-                template:
-                    this.runtime.character.templates?.telegramMessageHandlerTemplate ||
-                    this.runtime.character?.templates?.messageHandlerTemplate ||
-                    composeRandomUser(messageCompletionFooter, 2),
-            });
-            elizaLogger.log('Message context composed');
-            return context;
-        } catch (error) {
-            elizaLogger.error('Error composing message context:', error);
-            throw error;
-        }
-    }
-
-    private async generateResponse(context: string): Promise<string> {
-        try {
-            const response = await generateMessageResponse({
-                runtime: this.runtime,
-                context,
-                modelClass: ModelClass.MEDIUM,
-            });
-            elizaLogger.log('Response generated:', response ? 'success' : 'null');
-            return response;
-        } catch (error) {
-            elizaLogger.error('Error generating response:', error);
-            throw error;
-        }
-    }
-
     private updateChatState(message: Message, response: string): void {
         try {
             const chatId = message.chat.id;
+            
+            // Initialize chat state if not exists
             if (!this.interestChats[chatId]) {
                 this.interestChats[chatId] = {
                     lastMessageSent: Date.now(),
                     messages: [],
-                    contextSimilarityThreshold: MESSAGE_CONSTANTS.DEFAULT_SIMILARITY_THRESHOLD,
                 };
             }
 
-            const chatState = this.interestChats[chatId];
-            chatState.messages.push({
-                userId: stringToUuid(message.from.id),
+            // Update last message sent time
+            this.interestChats[chatId].lastMessageSent = Date.now();
+
+            // Add message to chat history
+            this.interestChats[chatId].messages.push({
+                userId: message.from.id,
                 userName: message.from.username,
-                content: { text: response },
+                content: { text: message.text }
             });
 
-            // Keep only recent messages
-            if (chatState.messages.length > MESSAGE_CONSTANTS.CHAT_HISTORY_COUNT) {
-                chatState.messages = chatState.messages.slice(-MESSAGE_CONSTANTS.CHAT_HISTORY_COUNT);
+            // Add bot's response to chat history
+            this.interestChats[chatId].messages.push({
+                userId: this.runtime.agentId,
+                userName: 'bot',
+                content: { text: response }
+            });
+
+            // Keep only last N messages
+            const maxMessages = 10;
+            if (this.interestChats[chatId].messages.length > maxMessages) {
+                this.interestChats[chatId].messages = this.interestChats[chatId].messages.slice(-maxMessages);
             }
+
             elizaLogger.log('Chat state updated for:', chatId);
         } catch (error) {
             elizaLogger.error('Error updating chat state:', error);
