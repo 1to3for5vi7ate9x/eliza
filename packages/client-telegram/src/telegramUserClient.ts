@@ -23,6 +23,7 @@ export class TelegramUserClient {
         const apiId = parseInt(runtime.getSetting('TELEGRAM_API_ID'), 10);
         const apiHash = runtime.getSetting('TELEGRAM_API_HASH');
         const allowedGroupsStr = runtime.getSetting('TELEGRAM_ALLOWED_GROUPS');
+        const savedSession = runtime.getSetting('TELEGRAM_SESSION');
 
         elizaLogger.log('Config:', { apiId, allowedGroups: allowedGroupsStr });
 
@@ -37,7 +38,8 @@ export class TelegramUserClient {
         );
         elizaLogger.log('Initialized allowed groups:', Array.from(this.allowedGroups));
 
-        this.stringSession = new StringSession('');
+        // Initialize session with saved session string if available
+        this.stringSession = new StringSession(savedSession || '');
         this.client = new TelegramClient(this.stringSession, apiId, apiHash, {
             connectionRetries: 5,
         });
@@ -82,6 +84,8 @@ export class TelegramUserClient {
 
             // Save the session for future use
             this.sessionString = this.client.session.save() as string;
+            // Store the session string in the environment
+            await this.runtime.setSetting('TELEGRAM_SESSION', this.sessionString);
             elizaLogger.log('Session saved successfully');
         } catch (error) {
             elizaLogger.error('Failed to initialize Telegram client:', error);
@@ -220,6 +224,24 @@ export class TelegramUserClient {
             } catch (error) {
                 elizaLogger.error('Error during shutdown:', error);
                 process.exit(1);
+            }
+        };
+
+        process.on('SIGINT', () => shutdownHandler('SIGINT'));
+        process.on('SIGTERM', () => shutdownHandler('SIGTERM'));
+    }
+
+    async stop(): Promise<void> {
+        try {
+            elizaLogger.log('Disconnecting from Telegram...');
+            await this.client.disconnect();
+            elizaLogger.success('✅ Successfully disconnected from Telegram');
+        } catch (error) {
+            elizaLogger.error('Error disconnecting from Telegram:', error);
+            throw error;
+        }
+    }
+}
             }
         };
 
