@@ -145,6 +145,16 @@ You may need to install Sharp. If you see an error when starting up, try install
 pnpm install --include=optional sharp
 ```
 
+### Using Eliza with Telegram
+
+To start Eliza with the Telegram connector and the CryptoAI Sage character:
+
+```bash
+pnpm start --characters=characters/cryptoai_sage.character.json
+```
+
+This will launch Eliza with the CryptoAI Sage character configuration, ready to interact through Telegram. Make sure you have properly configured your Telegram bot token in the `.env` file before starting.
+
 ### Community & contact
 
 - [GitHub Issues](https://github.com/elizaos/eliza/issues). Best for: bugs you encounter using Eliza, and feature proposals.
