@@ -30,11 +30,23 @@ Copy the following variables to your `.env` file and fill in your credentials:
 TELEGRAM_API_ID=            # API ID from my.telegram.org/apps
 TELEGRAM_API_HASH=          # API Hash from my.telegram.org/apps
 TELEGRAM_PHONE_NUMBER=      # Your phone number in international format
-TELEGRAM_ALLOWED_GROUPS=    # (Optional) Comma-separated list of allowed group IDs
+TELEGRAM_ALLOWED_GROUPS=    # (Optional) Comma-separated list of group names (e.g., CryptoTalk,AIDiscussion)
 TELEGRAM_SESSION=           # Will be auto-generated after first login
 ```
 
-### 3. Start Eliza with CryptoAI Sage
+### 3. Configure Allowed Groups (Optional)
+
+To restrict the bot to specific groups:
+1. Add your bot to the desired Telegram groups
+2. Set the `TELEGRAM_ALLOWED_GROUPS` variable with the group names:
+   ```bash
+   TELEGRAM_ALLOWED_GROUPS=CryptoTalk,AIDiscussion,BlockchainHub
+   ```
+3. The bot will only respond in these specified groups
+4. Group names are case-sensitive and should match exactly as shown in Telegram
+5. Leave empty to allow the bot to respond in all groups
+
+### 4. Start Eliza with CryptoAI Sage
 
 Run the following command to start Eliza with the CryptoAI Sage character:
 
@@ -42,7 +54,7 @@ Run the following command to start Eliza with the CryptoAI Sage character:
 pnpm start --characters=characters/cryptoai_sage.character.json
 ```
 
-### 4. First-Time Login
+### 5. First-Time Login
 
 On the first run:
 1. You'll be prompted to enter your phone number
@@ -50,7 +62,7 @@ On the first run:
 3. Enter the verification code when prompted
 4. The session string will be generated save it to .env file to avoid verification each time you run the character file
 
-### 5. Subsequent Runs
+### 6. Subsequent Runs
 
 After the initial setup, you can simply use the same start command:
 
@@ -60,9 +72,11 @@ pnpm start --characters=characters/cryptoai_sage.character.json
 
 ## Usage Tips
 
-- The bot will only respond in allowed groups if you've configured `TELEGRAM_ALLOWED_GROUPS`
-- If no groups are specified, the bot will respond in all chats
-- You can interact with the bot in both private chats and groups
+- The bot will only respond in groups listed in `TELEGRAM_ALLOWED_GROUPS`
+- Group names must match exactly as they appear in Telegram (case-sensitive)
+- You can add or remove groups by updating the `TELEGRAM_ALLOWED_GROUPS` list
+- If no groups are specified, the bot will not respond to any messages
+- You can interact with the bot in both private chats and groups just make sure to mention them in .env
 - Use the bot's commands to interact with the CryptoAI Sage character
 
 ## Troubleshooting
