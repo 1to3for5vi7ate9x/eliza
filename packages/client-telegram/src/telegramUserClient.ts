@@ -31,12 +31,16 @@ export class TelegramUserClient {
             throw new Error('TELEGRAM_API_ID and TELEGRAM_API_HASH must be set in environment');
         }
 
-        // Normalize group IDs by removing any minus signs
+        // Initialize allowed groups from names - empty string or undefined means no groups allowed
         this.allowedGroups = new Set(
-            allowedGroupsStr?.split(',')
-                .map(id => id.trim().replace(/^-/, '')) || []
+            allowedGroupsStr?.trim() 
+                ? allowedGroupsStr.split(',').map(name => name.trim())
+                : []
         );
         elizaLogger.log('Initialized allowed groups:', Array.from(this.allowedGroups));
+        if (this.allowedGroups.size === 0) {
+            elizaLogger.warn('⚠️ No allowed groups specified - bot will not respond to any messages');
+        }
 
         // Initialize session with saved session string if available
         this.stringSession = new StringSession(savedSession || '');
@@ -115,7 +119,7 @@ export class TelegramUserClient {
                     });
 
                     // Skip if not from allowed groups
-                    if (!chatId || !this.isAllowedGroup(chatId)) {
+                    if (!chatId || !(await this.isAllowedGroup(chatId))) {
                         elizaLogger.log('⚠️ Message not from allowed group:', chatId);
                         return;
                     }
@@ -209,13 +213,31 @@ export class TelegramUserClient {
         }
     }
 
-    private isAllowedGroup(chatId: string): boolean {
-        // Remove the minus sign if present for comparison
-        const normalizedChatId = chatId.replace(/^-/, '');
-        const isAllowed = this.allowedGroups.size === 0 || this.allowedGroups.has(normalizedChatId);
-        elizaLogger.log(`Group check - Raw: ${chatId}, Normalized: ${normalizedChatId}, Allowed: ${isAllowed}`);
-        elizaLogger.log(`Allowed groups:`, Array.from(this.allowedGroups));
-        return isAllowed;
+    private async isAllowedGroup(chatId: string): Promise<boolean> {
+        try {
+            // If no groups specified, deny all access
+            if (this.allowedGroups.size === 0) {
+                elizaLogger.log('⚠️ No allowed groups configured - denying access');
+                return false;
+            }
+
+            // Get chat information
+            const chat = await this.client.getEntity(chatId);
+            if (!chat) {
+                elizaLogger.log(`⚠️ Could not find chat info for ID: ${chatId}`);
+                return false;
+            }
+
+            // Check if the chat title matches any of the allowed group names
+            const chatTitle = chat.title || '';
+            const isAllowed = this.allowedGroups.has(chatTitle);
+            elizaLogger.log(`Group check - Name: ${chatTitle}, Allowed: ${isAllowed}`);
+            elizaLogger.log(`Allowed groups:`, Array.from(this.allowedGroups));
+            return isAllowed;
+        } catch (error) {
+            elizaLogger.error('Error checking group permission:', error);
+            return false;
+        }
     }
 
     private setupShutdownHandlers(): void {
