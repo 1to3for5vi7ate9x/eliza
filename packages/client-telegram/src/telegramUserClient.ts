@@ -228,10 +228,10 @@ export class TelegramUserClient {
                 return false;
             }
 
-            // Check if the chat title matches any of the allowed group names
-            const chatTitle = chat.title || '';
-            const isAllowed = this.allowedGroups.has(chatTitle);
-            elizaLogger.log(`Group check - Name: ${chatTitle}, Allowed: ${isAllowed}`);
+            // Check if the chat username matches any of the allowed group usernames
+            const chatUsername = chat.username || '';
+            const isAllowed = this.allowedGroups.has(chatUsername);
+            elizaLogger.log(`Group check - Username: ${chatUsername}, Allowed: ${isAllowed}`);
             elizaLogger.log(`Allowed groups:`, Array.from(this.allowedGroups));
             return isAllowed;
         } catch (error) {

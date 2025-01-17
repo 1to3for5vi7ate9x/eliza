@@ -30,7 +30,7 @@ Copy the following variables to your `.env` file and fill in your credentials:
 TELEGRAM_API_ID=            # API ID from my.telegram.org/apps
 TELEGRAM_API_HASH=          # API Hash from my.telegram.org/apps
 TELEGRAM_PHONE_NUMBER=      # Your phone number in international format
-TELEGRAM_ALLOWED_GROUPS=    # (Optional) Comma-separated list of group names (e.g., CryptoTalk,AIDiscussion)
+TELEGRAM_ALLOWED_GROUPS=    # (Optional) Comma-separated list of group usernames (e.g., CryptoTalk,AIDiscussion)
 TELEGRAM_SESSION=           # Will be auto-generated after first login
 ```
 
@@ -38,12 +38,12 @@ TELEGRAM_SESSION=           # Will be auto-generated after first login
 
 To restrict the bot to specific groups:
 1. Add your bot to the desired Telegram groups
-2. Set the `TELEGRAM_ALLOWED_GROUPS` variable with the group names:
+2. Set the `TELEGRAM_ALLOWED_GROUPS` variable with the group usernames:
    ```bash
    TELEGRAM_ALLOWED_GROUPS=CryptoTalk,AIDiscussion,BlockchainHub
    ```
 3. The bot will only respond in these specified groups
-4. Group names are case-sensitive and should match exactly as shown in Telegram
+4. Group usernames are case-sensitive and should match exactly as shown in the invite link (e.g., if the invite link is t.me/MyGroup, use "MyGroup")
 5. Leave empty to allow the bot to respond in all groups
 
 ### 4. Start Eliza with CryptoAI Sage
@@ -73,7 +73,7 @@ pnpm start --characters=characters/cryptoai_sage.character.json
 ## Usage Tips
 
 - The bot will only respond in groups listed in `TELEGRAM_ALLOWED_GROUPS`
-- Group names must match exactly as they appear in Telegram (case-sensitive)
+- Group usernames must match exactly as they appear in the invite link (e.g., if the invite link is t.me/MyGroup, use "MyGroup")
 - You can add or remove groups by updating the `TELEGRAM_ALLOWED_GROUPS` list
 - If no groups are specified, the bot will not respond to any messages
 - You can interact with the bot in both private chats and groups just make sure to mention them in .env
