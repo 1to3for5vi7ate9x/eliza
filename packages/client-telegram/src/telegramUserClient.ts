@@ -82,11 +82,14 @@ export class TelegramUserClient {
 
             elizaLogger.success('✅ Successfully connected to Telegram!');
 
-            // Save the session for future use
+            // Save the session string
             this.sessionString = this.client.session.save() as string;
-            // Store the session string in the environment
-            await this.runtime.setSetting('TELEGRAM_SESSION', this.sessionString);
-            elizaLogger.log('Session saved successfully');
+            
+            // Log the session string and instructions
+            elizaLogger.info('🔑 Your Telegram session string has been generated.');
+            elizaLogger.info('To avoid re-authentication, add this to your .env file:');
+            elizaLogger.info('TELEGRAM_SESSION=' + this.sessionString);
+            
         } catch (error) {
             elizaLogger.error('Failed to initialize Telegram client:', error);
             throw error;
@@ -100,12 +103,14 @@ export class TelegramUserClient {
             this.client.addEventHandler(async (event: NewMessage.Event) => {
                 try {
                     const message = event.message;
-                    const chatId = message.chatId?.toString();
+                    const chatId = message?.chatId?.toString();
+                    const messageText = message?.message || '';
+                    const senderId = message?.senderId?.toString() || '';
 
                     elizaLogger.log('📨 Received message event:', {
                         chatId,
-                        text: message.message,
-                        fromId: message.senderId?.toString(),
+                        text: messageText,
+                        fromId: senderId,
                         timestamp: new Date().toISOString()
                     });
 
@@ -115,9 +120,7 @@ export class TelegramUserClient {
                         return;
                     }
 
-                    // Get the message text
-                    const text = message.message || '';
-                    elizaLogger.log(`📝 Processing message: ${text}`);
+                    elizaLogger.log(`📝 Processing message: ${messageText}`);
 
                     try {
                         // Get sender info
@@ -126,16 +129,16 @@ export class TelegramUserClient {
 
                         elizaLogger.log('👤 Message details:', {
                             sender: sender?.username,
-                            me: me.username,
-                            text,
+                            me: me?.username,
+                            text: messageText,
                             timestamp: new Date().toISOString()
                         });
 
                         // Process the message
                         const response = await this.messageManager.handleMessage({
-                            text,
+                            text: messageText,
                             from: {
-                                id: message.senderId?.toString() || '',
+                                id: senderId,
                                 username: sender?.username || '',
                             },
                             chat: {
@@ -143,7 +146,7 @@ export class TelegramUserClient {
                                 type: 'group',
                             },
                             replyTo: message.replyTo ? {
-                                messageId: message.replyTo.id.toString(),
+                                messageId: message.replyTo.id?.toString() || '',
                                 userId: message.replyTo.senderId?.toString() || '',
                             } : undefined,
                         });
@@ -188,7 +191,7 @@ export class TelegramUserClient {
                             error: processingError instanceof Error ? processingError.message : 'Unknown error',
                             stack: processingError instanceof Error ? processingError.stack : undefined,
                             chatId,
-                            text
+                            text: messageText
                         });
                     }
                 } catch (eventError) {
@@ -224,24 +227,6 @@ export class TelegramUserClient {
             } catch (error) {
                 elizaLogger.error('Error during shutdown:', error);
                 process.exit(1);
-            }
-        };
-
-        process.on('SIGINT', () => shutdownHandler('SIGINT'));
-        process.on('SIGTERM', () => shutdownHandler('SIGTERM'));
-    }
-
-    async stop(): Promise<void> {
-        try {
-            elizaLogger.log('Disconnecting from Telegram...');
-            await this.client.disconnect();
-            elizaLogger.success('✅ Successfully disconnected from Telegram');
-        } catch (error) {
-            elizaLogger.error('Error disconnecting from Telegram:', error);
-            throw error;
-        }
-    }
-}
             }
         };
 
