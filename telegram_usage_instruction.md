@@ -48,7 +48,7 @@ On the first run:
 1. You'll be prompted to enter your phone number
 2. Telegram will send you a verification code
 3. Enter the verification code when prompted
-4. The session string will be automatically saved
+4. The session string will be generated save it to .env file to avoid verification each time you run the character file
 
 ### 5. Subsequent Runs
 
