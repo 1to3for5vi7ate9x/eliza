@@ -29,7 +29,7 @@ import {
 
 // Message handler template for Telegram
 export const telegramMessageHandlerTemplate = `
-# Areas of Expertise
+# Character Context
 {{knowledge}}
 
 # About {{agentName}}:
@@ -37,33 +37,20 @@ export const telegramMessageHandlerTemplate = `
 {{lore}}
 {{topics}}
 
-Recent interactions:
-{{recentPostInteractions}}
+# Current Conversation
+User {{username}} asks: {{message}}
 
-# TASK: Generate a response as {{agentName}}
+# Chat History
+{{chatHistory}}
 
-Current Message:
-{{currentPost}}
+# Task
+Generate a natural, conversational response that:
+1. Directly addresses the user's message
+2. Shows expertise without being overly technical
+3. Maintains a friendly, helpful tone
+4. Keeps the response concise (2-3 sentences)
 
-Previous Messages:
-{{formattedConversation}}
-
-# INSTRUCTIONS:
-1. First, understand the exact question or topic the user is asking about
-2. Provide a direct, concise answer that addresses the specific question
-3. Keep responses short and natural, like a human conversation
-4. Stay strictly on topic - only add relevant context if necessary
-5. Use a friendly but professional tone
-6. Avoid asking unnecessary questions
-7. If the question is about your knowledge in a topic, first confirm if you know it, then offer to share specific aspects
-
-Remember:
-- Keep responses under 2-3 sentences
-- Answer the question first, then add minimal context if needed
-- Stay focused on the user's specific question
-- Use natural, conversational language
-- Be direct and clear
-` + messageCompletionFooter;
+${messageCompletionFooter}`;
 
 // Should respond template for Telegram
 export const telegramShouldRespondTemplate = `
@@ -73,23 +60,23 @@ Response options are [RESPOND], [IGNORE] and [STOP].
 
 For messages:
 - RESPOND to direct questions
-- RESPOND to messages about crypto, blockchain, AI, or technology
-- RESPOND if someone is seeking advice in your areas of expertise
-- IGNORE messages that are completely off-topic (not about tech, crypto, AI, or related fields)
+- RESPOND to messages about topics in character's expertise
+- IGNORE messages that are completely off-topic
 - IGNORE spam or nonsense messages
 - STOP if asked to stop or if conversation is clearly ended
 
 IMPORTANT:
-- If the message is even slightly related to your expertise, choose RESPOND
-- Only IGNORE messages that are completely unrelated to your knowledge areas
+- If the message is even slightly related to expertise, choose RESPOND
+- Only IGNORE messages that are completely unrelated
 - When in doubt about relevance, choose RESPOND
 
 Recent Messages:
 {{recentPosts}}
 
-Current message for analysis:
+Current message:
 {{currentPost}}
-` + shouldRespondFooter;
+
+${shouldRespondFooter}`;
 
 const MAX_MESSAGE_LENGTH = 4096; // Telegram's max message length
 
@@ -133,129 +120,55 @@ export class MessageManager {
             });
 
             // Create memory for the message
-            let memory: Memory;
-            try {
-                memory = await this.createMessageMemory(message);
-                elizaLogger.log('✅ Memory created successfully:', memory);
-            } catch (error) {
-                elizaLogger.error('❌ Failed to create message memory:', error);
-                throw new Error('Memory creation failed');
-            }
+            let memory = await this.createMessageMemory({
+                text: message.text,
+                userId: message.from.id
+            });
 
-            // Get state with message context and chat history
-            let state: State;
-            try {
-                state = await this.runtime.composeState(memory);
-                
-                // Add recent chat history to state
-                const chatId = message.chat.id;
-                if (this.interestChats[chatId]) {
-                    const recentMessages = this.interestChats[chatId].messages
-                        .slice(-5) // Get last 5 messages
-                        .map(msg => `${msg.userName}: ${msg.content.text}`)
-                        .join('\n');
-                    state.context = `Recent chat history:\n${recentMessages}\n\nCurrent message:\n${message.from.username}: ${message.text}`;
-                } else {
-                    state.context = `Current message:\n${message.from.username}: ${message.text}`;
-                }
-                
-                elizaLogger.log('✅ State composed successfully with chat history');
-            } catch (error) {
-                elizaLogger.error('❌ Failed to compose state:', error);
-                throw new Error('State composition failed');
+            // Compose state with chat history
+            let state = await this.runtime.composeState(memory);
+            const chatId = message.chat.id;
+            if (this.interestChats[chatId]) {
+                state.context = this.interestChats[chatId].messages
+                    .slice(-5)
+                    .map(msg => `${msg.userName}: ${msg.content.text}`)
+                    .join('\n');
+            } else {
+                state.context = `Current message:\n${message.from.username}: ${message.text}`;
             }
 
             // Use AI to decide whether to respond
-            let shouldRespond: string;
-            try {
-                const shouldRespondContext = composeContext({
+            let shouldRespond = await generateShouldRespond({
+                runtime: this.runtime,
+                context: composeContext({
                     state,
-                    template: this.runtime.character?.templates?.telegramShouldRespondTemplate || 
-                             this.runtime.character?.templates?.shouldRespondTemplate || 
-                             telegramShouldRespondTemplate
-                });
-                elizaLogger.log('📝 Response context composed:', shouldRespondContext);
-                
-                shouldRespond = await generateShouldRespond({
-                    runtime: this.runtime,
-                    context: shouldRespondContext,
-                    modelClass: ModelClass.LARGE
-                });
-                elizaLogger.log('🤔 Response decision:', shouldRespond);
-            } catch (error) {
-                elizaLogger.error('❌ Failed to determine if should respond:', error);
-                throw new Error('Response decision failed');
-            }
+                    template: this.runtime.character?.templates?.telegramShouldRespondTemplate || telegramShouldRespondTemplate
+                }),
+                modelClass: ModelClass.LARGE
+            });
 
             if (shouldRespond !== 'RESPOND') {
-                elizaLogger.log('⏭️ Decided not to respond');
+                elizaLogger.log('🤔 Decided not to respond');
                 return null;
             }
 
             // Generate response using character's personality
-            let response: string;
-            try {
-                const messageContext = `
-# Current Conversation
-User ${message.from.username} asks: ${message.text}
-
-# Chat History
-${this.interestChats[message.chat.id]?.messages
-    .slice(-5)
-    .map(msg => `${msg.userName}: ${msg.content.text}`)
-    .join('\n') || 'No previous messages'}
-
-# Task
-Generate a natural, conversational response to the user's message that:
-1. Directly addresses their question about Bitcoin
-2. Shows expertise without being overly technical
-3. Maintains a friendly, helpful tone
-4. Keeps the response concise (2-3 sentences)
-
-${this.runtime.character?.templates?.telegramMessageHandlerTemplate ||
-  this.runtime.character?.templates?.messageHandlerTemplate ||
-  telegramMessageHandlerTemplate}`;
-
-                elizaLogger.log('📝 Message context composed:', messageContext);
-                
-                response = await generateMessageResponse({
-                    runtime: this.runtime,
-                    context: messageContext,
-                    modelClass: ModelClass.LARGE
-                });
-
-                // Parse JSON response if needed
-                try {
-                    const jsonResponse = JSON.parse(response);
-                    response = jsonResponse.text || response;
-                } catch (e) {
-                    // If not JSON, use response as is
-                }
-
-                elizaLogger.log('✅ Raw response generated:', response);
-
-            } catch (error) {
-                elizaLogger.error('❌ Failed to generate response:', error);
-                throw new Error('Response generation failed');
-            }
-
-            if (!response) {
-                elizaLogger.error('❌ No response generated');
-                return null;
-            }
+            let response = await generateMessageResponse({
+                runtime: this.runtime,
+                context: composeContext({
+                    state,
+                    template: this.runtime.character?.templates?.telegramMessageHandlerTemplate || telegramMessageHandlerTemplate
+                }),
+                modelClass: ModelClass.LARGE
+            });
 
             // Update chat state
-            try {
-                this.updateChatState(message, response);
-                elizaLogger.log('✅ Chat state updated successfully');
-            } catch (error) {
-                elizaLogger.error('❌ Failed to update chat state:', error);
-            }
+            this.updateChatState(message, response);
 
-            elizaLogger.success('✨ Message handled successfully');
-            return { text: response };
+            return { type: 'text', content: response };
+
         } catch (error) {
-            elizaLogger.error('❌ Critical error in handleMessage:', error);
+            elizaLogger.error('❌ Error handling message:', error);
             return null;
         }
     }
@@ -293,7 +206,7 @@ ${this.runtime.character?.templates?.telegramMessageHandlerTemplate ||
     private updateChatState(message: Message, response: string): void {
         try {
             const chatId = message.chat.id;
-            
+
             // Initialize chat state if not exists
             if (!this.interestChats[chatId]) {
                 this.interestChats[chatId] = {
