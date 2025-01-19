@@ -27,7 +27,7 @@ import {
     RESPONSE_CHANCES,
 } from "./constants";
 
-// Message handler template for Telegram
+// Base templates that incorporate character's style and behavior
 export const telegramMessageHandlerTemplate = `
 # Character Context
 {{knowledge}}
@@ -37,44 +37,35 @@ export const telegramMessageHandlerTemplate = `
 {{lore}}
 {{topics}}
 
+# Character Style
+{{style.all}}
+{{style.chat}}
+{{style.avoid}}
+
 # Current Conversation Context
 Previous messages:
 {{context}}
 
 # Current Question/Message
 User {{username}} asks: {{currentMessage}}
-
-# Task
-Generate a natural, conversational response that:
-1. Directly addresses the user's specific question/message
-2. Shows expertise without being overly technical
-3. Maintains a friendly, helpful tone
-4. Keeps the response concise (2-3 sentences)
-5. Stays focused on the current topic
 ` + messageCompletionFooter;
 
-// Should respond template for Telegram
 export const telegramShouldRespondTemplate = `
 # Character Context
 Name: {{agentName}}
 Role: {{description}}
+Topics: {{topics}}
+
+# Character Style
+{{style.all}}
+{{style.chat}}
+{{style.avoid}}
 
 # Conversation State
 Previous messages:
 {{context}}
 
 Current message from user {{username}}: {{currentMessage}}
-
-# Task
-Determine if {{agentName}} should respond to this message. Consider:
-1. Is the message relevant to {{agentName}}'s expertise?
-2. Is it a direct question or comment that warrants a response?
-3. Has {{agentName}} already answered a similar question recently?
-
-Respond with one of:
-- RESPOND: If the message deserves a response
-- IGNORE: If the message is irrelevant or doesn't need a response
-- STOP: If the conversation should end
 ` + shouldRespondFooter;
 
 const MAX_MESSAGE_LENGTH = 4096; // Telegram's max message length
@@ -124,16 +115,16 @@ export class MessageManager {
             }
 
             // Ensure message text is properly formatted
-            message.text = typeof message.text === 'object' ? 
+            message.text = typeof message.text === 'object' ?
                 JSON.stringify(message.text) : String(message.text || '');
 
             // Create memory for the message
             let memory = await this.createMessageMemory(message);
 
-            // Compose state with chat history
+            // Compose state with chat history and character details
             let state = await this.runtime.composeState(memory);
             const chatId = message.chat.id;
-            
+
             // Add chat history context
             if (this.interestChats[chatId]) {
                 const recentMessages = this.interestChats[chatId].messages
@@ -144,19 +135,21 @@ export class MessageManager {
                 state.context = `Recent conversation:\n${recentMessages}`;
             }
 
-            // Add current message and user info
-            state.currentMessage = message.text;
-            state.username = message.from.username || 'User';
-
-            // Add character context
+            // Add character context including style and behavior
             state.character = {
                 name: this.runtime.character.name,
                 description: this.runtime.character.description,
                 topics: this.runtime.character.topics,
-                knowledge: this.runtime.character.knowledge
+                knowledge: this.runtime.character.knowledge,
+                style: this.runtime.character.style || {},
+                system: this.runtime.character.system
             };
 
-            // Use AI to decide whether to respond
+            // Add current message and user info
+            state.currentMessage = message.text;
+            state.username = message.from.username || 'User';
+
+            // Use AI to decide whether to respond using character's style
             let shouldRespond = await generateShouldRespond({
                 runtime: this.runtime,
                 context: composeContext({
@@ -254,7 +247,7 @@ export class MessageManager {
             const messageId = stringToUuid(Date.now().toString());
 
             // Ensure message content is properly formatted
-            const messageText = typeof message.text === 'object' ? 
+            const messageText = typeof message.text === 'object' ?
                 JSON.stringify(message.text) : String(message.text || '');
 
             // Create memory content object
@@ -316,14 +309,14 @@ export class MessageManager {
             this.interestChats[chatId].lastMessageSent = Date.now();
 
             // Ensure message content is properly formatted
-            const messageText = typeof message.text === 'object' ? 
+            const messageText = typeof message.text === 'object' ?
                 JSON.stringify(message.text) : String(message.text || '');
 
             // Add message to chat history with proper content structure
             this.interestChats[chatId].messages.push({
                 userId: message.from.id,
                 userName: message.from.username || message.from.firstName || 'Unknown',
-                content: { 
+                content: {
                     text: messageText,
                     source: 'telegram'
                 }
@@ -333,7 +326,7 @@ export class MessageManager {
             this.interestChats[chatId].messages.push({
                 userId: this.runtime.agentId,
                 userName: this.runtime.character.name,
-                content: { 
+                content: {
                     text: String(response),
                     source: 'telegram'
                 }
