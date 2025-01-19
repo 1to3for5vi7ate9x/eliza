@@ -291,10 +291,11 @@ const boredomProvider: Provider = {
         let boredomScore = 0;
 
         for (const recentMessage of recentMessages) {
-            const messageText = recentMessage?.content?.text?.toLowerCase();
-            if (!messageText) {
+            if (!recentMessage?.content?.text) {
                 continue;
             }
+
+            const messageText = String(recentMessage.content.text);
 
             if (recentMessage.userId !== agentId) {
                 // if message text includes any of the interest words, subtract 1 from the boredom score

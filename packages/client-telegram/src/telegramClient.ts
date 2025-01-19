@@ -15,6 +15,16 @@ export class TelegramClient {
     constructor(runtime: IAgentRuntime, botToken: string) {
         elizaLogger.log("📱 Constructing new TelegramClient...");
         this.runtime = runtime;
+        
+        // Validate character configuration
+        if (!this.runtime.character) {
+            throw new Error("Character configuration is missing");
+        }
+        elizaLogger.log("✅ Loaded character:", {
+            name: this.runtime.character.name,
+            description: this.runtime.character.description
+        });
+
         this.bot = new Telegraf(botToken);
         this.messageManager = new MessageManager(this.bot, this.runtime);
         this.backend = runtime.getSetting("BACKEND_URL");
@@ -103,6 +113,11 @@ export class TelegramClient {
                     return;
                 }
 
+                if (!ctx.message?.text) {
+                    elizaLogger.warn("Received message without text content");
+                    return;
+                }
+
                 if (this.tgTrader) {
                     const userId = ctx.from?.id.toString();
                     const username =
@@ -128,9 +143,64 @@ export class TelegramClient {
                     }
                 }
 
-                await this.messageManager.handleMessage(ctx);
+                // Convert Telegram message to our Message type
+                const message: Message = {
+                    text: ctx.message.text,
+                    from: {
+                        id: ctx.from.id.toString(),
+                        username: ctx.from.username || ctx.from.first_name || "Unknown"
+                    },
+                    chat: {
+                        id: ctx.chat.id.toString(),
+                        type: ctx.chat.type
+                    }
+                };
+
+                elizaLogger.log('📨 Processing message with character:', {
+                    message: message.text,
+                    character: this.runtime.character.name,
+                    characterTopics: this.runtime.character.topics
+                });
+
+                // Handle message and get response
+                const response = await this.messageManager.handleMessage(message);
+                
+                if (response && response.content) {
+                    elizaLogger.log('📤 Sending response to Telegram:', {
+                        response: response.content,
+                        character: this.runtime.character.name
+                    });
+                    
+                    // Split long messages if needed
+                    const MAX_LENGTH = 4096;
+                    const text = response.content;
+                    
+                    if (text.length <= MAX_LENGTH) {
+                        await ctx.reply(text);
+                    } else {
+                        // Split long messages
+                        const chunks = text.match(new RegExp(`.{1,${MAX_LENGTH}}`, 'g')) || [];
+                        for (const chunk of chunks) {
+                            await ctx.reply(chunk);
+                        }
+                    }
+                } else {
+                    elizaLogger.log('No response to send', {
+                        reason: 'Response was null or empty',
+                        message: message.text
+                    });
+                }
             } catch (error) {
-                elizaLogger.error("❌ Error handling message:", error);
+                // Enhanced error logging
+                elizaLogger.error("❌ Error handling message:", {
+                    error: error instanceof Error ? error.message : 'Unknown error',
+                    stack: error instanceof Error ? error.stack : undefined,
+                    character: this.runtime.character?.name,
+                    message: ctx.message?.text,
+                    chatId: ctx.chat?.id,
+                    userId: ctx.from?.id
+                });
+                
                 // Don't try to reply if we've left the group or been kicked
                 if (error?.response?.error_code !== 403) {
                     try {
