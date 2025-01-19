@@ -37,46 +37,45 @@ export const telegramMessageHandlerTemplate = `
 {{lore}}
 {{topics}}
 
-# Current Conversation
-User {{username}} asks: {{message}}
+# Current Conversation Context
+Previous messages:
+{{context}}
 
-# Chat History
-{{chatHistory}}
+# Current Question/Message
+User {{username}} asks: {{currentMessage}}
 
 # Task
 Generate a natural, conversational response that:
-1. Directly addresses the user's message
+1. Directly addresses the user's specific question/message
 2. Shows expertise without being overly technical
 3. Maintains a friendly, helpful tone
 4. Keeps the response concise (2-3 sentences)
-
-${messageCompletionFooter}`;
+5. Stays focused on the current topic
+` + messageCompletionFooter;
 
 // Should respond template for Telegram
 export const telegramShouldRespondTemplate = `
-# INSTRUCTIONS: Determine if {{agentName}} should respond to the message.
+# Character Context
+Name: {{agentName}}
+Role: {{description}}
 
-Response options are [RESPOND], [IGNORE] and [STOP].
+# Conversation State
+Previous messages:
+{{context}}
 
-For messages:
-- RESPOND to direct questions
-- RESPOND to messages about topics in character's expertise
-- IGNORE messages that are completely off-topic
-- IGNORE spam or nonsense messages
-- STOP if asked to stop or if conversation is clearly ended
+Current message from user {{username}}: {{currentMessage}}
 
-IMPORTANT:
-- If the message is even slightly related to expertise, choose RESPOND
-- Only IGNORE messages that are completely unrelated
-- When in doubt about relevance, choose RESPOND
+# Task
+Determine if {{agentName}} should respond to this message. Consider:
+1. Is the message relevant to {{agentName}}'s expertise?
+2. Is it a direct question or comment that warrants a response?
+3. Has {{agentName}} already answered a similar question recently?
 
-Recent Messages:
-{{recentPosts}}
-
-Current message:
-{{currentPost}}
-
-${shouldRespondFooter}`;
+Respond with one of:
+- RESPOND: If the message deserves a response
+- IGNORE: If the message is irrelevant or doesn't need a response
+- STOP: If the conversation should end
+` + shouldRespondFooter;
 
 const MAX_MESSAGE_LENGTH = 4096; // Telegram's max message length
 
@@ -119,23 +118,43 @@ export class MessageManager {
                 userId: message.from.id
             });
 
+            // Validate message
+            if (!message.from.id || !message.chat.id) {
+                throw new Error('Invalid message format: Missing required fields');
+            }
+
+            // Ensure message text is properly formatted
+            message.text = typeof message.text === 'object' ? 
+                JSON.stringify(message.text) : String(message.text || '');
+
             // Create memory for the message
-            let memory = await this.createMessageMemory({
-                text: message.text,
-                userId: message.from.id
-            });
+            let memory = await this.createMessageMemory(message);
 
             // Compose state with chat history
             let state = await this.runtime.composeState(memory);
             const chatId = message.chat.id;
+            
+            // Add chat history context
             if (this.interestChats[chatId]) {
-                state.context = this.interestChats[chatId].messages
+                const recentMessages = this.interestChats[chatId].messages
                     .slice(-5)
                     .map(msg => `${msg.userName}: ${msg.content.text}`)
                     .join('\n');
-            } else {
-                state.context = `Current message:\n${message.from.username}: ${message.text}`;
+                    
+                state.context = `Recent conversation:\n${recentMessages}`;
             }
+
+            // Add current message and user info
+            state.currentMessage = message.text;
+            state.username = message.from.username || 'User';
+
+            // Add character context
+            state.character = {
+                name: this.runtime.character.name,
+                description: this.runtime.character.description,
+                topics: this.runtime.character.topics,
+                knowledge: this.runtime.character.knowledge
+            };
 
             // Use AI to decide whether to respond
             let shouldRespond = await generateShouldRespond({
@@ -147,8 +166,16 @@ export class MessageManager {
                 modelClass: ModelClass.LARGE
             });
 
+            elizaLogger.log('🤔 Should respond decision:', {
+                decision: shouldRespond,
+                message: message.text
+            });
+
             if (shouldRespond !== 'RESPOND') {
-                elizaLogger.log('🤔 Decided not to respond');
+                elizaLogger.log('Decided not to respond', {
+                    reason: shouldRespond,
+                    message: message.text
+                });
                 return null;
             }
 
@@ -162,13 +189,60 @@ export class MessageManager {
                 modelClass: ModelClass.LARGE
             });
 
-            // Update chat state
-            this.updateChatState(message, response);
+            elizaLogger.log('🤖 Generated response:', {
+                response,
+                character: this.runtime.character.name,
+                message: message.text
+            });
 
-            return { type: 'text', content: response };
+            // Ensure response is properly formatted
+            let responseText: string;
+            if (typeof response === 'string') {
+                responseText = response;
+            } else if (typeof response === 'object' && response.text) {
+                responseText = String(response.text);
+            } else {
+                elizaLogger.warn('Invalid response format:', response);
+                return null;
+            }
+
+            // Update chat state
+            this.updateChatState(message, responseText);
+
+            // Create response memory with proper content structure
+            const responseMemory: Memory = {
+                id: stringToUuid(Date.now().toString()),
+                agentId: this.runtime.agentId,
+                userId: stringToUuid(message.from.id),
+                roomId: stringToUuid(message.chat.id + "-" + this.runtime.agentId),
+                content: {
+                    text: responseText,
+                    source: 'telegram',
+                    inReplyTo: memory.id
+                },
+                createdAt: Date.now(),
+                embedding: getEmbeddingZeroVector(),
+            };
+
+            await this.runtime.messageManager.createMemory(responseMemory);
+
+            return {
+                type: 'text',
+                text: responseText,
+                content: responseText,
+                source: 'telegram',
+                inReplyTo: memory.id
+            };
 
         } catch (error) {
-            elizaLogger.error('❌ Error handling message:', error);
+            elizaLogger.error('❌ Error handling message:', {
+                error: error instanceof Error ? error.message : 'Unknown error',
+                stack: error instanceof Error ? error.stack : undefined,
+                message: message.text,
+                userId: message.from?.id,
+                chatId: message.chat?.id,
+                character: this.runtime.character?.name
+            });
             return null;
         }
     }
@@ -177,15 +251,31 @@ export class MessageManager {
         try {
             const userId = stringToUuid(message.from.id);
             const roomId = stringToUuid(message.chat.id + "-" + this.runtime.agentId);
+            const messageId = stringToUuid(Date.now().toString());
 
+            // Ensure message content is properly formatted
+            const messageText = typeof message.text === 'object' ? 
+                JSON.stringify(message.text) : String(message.text || '');
+
+            // Create memory content object
             const content: Content = {
-                text: message.text,
+                text: messageText,
                 source: 'telegram',
                 inReplyTo: message.replyTo ? stringToUuid(message.replyTo.messageId) : undefined
             };
 
+            // Ensure connection exists
+            await this.runtime.ensureConnection(
+                userId,
+                roomId,
+                message.from.username || '',
+                message.from.firstName || '',
+                'telegram'
+            );
+
+            // Create memory object
             const memory: Memory = {
-                id: stringToUuid(Date.now().toString()),
+                id: messageId,
                 agentId: this.runtime.agentId,
                 userId,
                 roomId,
@@ -194,11 +284,18 @@ export class MessageManager {
                 embedding: getEmbeddingZeroVector(),
             };
 
+            // Store memory
             await this.runtime.messageManager.createMemory(memory);
             elizaLogger.log('Memory created successfully:', { id: memory.id, userId, roomId });
             return memory;
         } catch (error) {
-            elizaLogger.error('Error creating memory:', error);
+            elizaLogger.error('Error creating memory:', {
+                error: error instanceof Error ? error.message : 'Unknown error',
+                stack: error instanceof Error ? error.stack : undefined,
+                message: message.text,
+                userId: message.from.id,
+                chatId: message.chat.id
+            });
             throw error;
         }
     }
@@ -218,18 +315,28 @@ export class MessageManager {
             // Update last message sent time
             this.interestChats[chatId].lastMessageSent = Date.now();
 
-            // Add message to chat history
+            // Ensure message content is properly formatted
+            const messageText = typeof message.text === 'object' ? 
+                JSON.stringify(message.text) : String(message.text || '');
+
+            // Add message to chat history with proper content structure
             this.interestChats[chatId].messages.push({
                 userId: message.from.id,
-                userName: message.from.username,
-                content: { text: message.text }
+                userName: message.from.username || message.from.firstName || 'Unknown',
+                content: { 
+                    text: messageText,
+                    source: 'telegram'
+                }
             });
 
-            // Add bot's response to chat history
+            // Add bot's response to chat history with proper content structure
             this.interestChats[chatId].messages.push({
                 userId: this.runtime.agentId,
-                userName: 'bot',
-                content: { text: response }
+                userName: this.runtime.character.name,
+                content: { 
+                    text: String(response),
+                    source: 'telegram'
+                }
             });
 
             // Keep only last N messages
@@ -238,9 +345,17 @@ export class MessageManager {
                 this.interestChats[chatId].messages = this.interestChats[chatId].messages.slice(-maxMessages);
             }
 
-            elizaLogger.log('Chat state updated for:', chatId);
+            elizaLogger.log('Chat state updated:', {
+                chatId,
+                messageCount: this.interestChats[chatId].messages.length,
+                lastMessage: response
+            });
         } catch (error) {
-            elizaLogger.error('Error updating chat state:', error);
+            elizaLogger.error('Error updating chat state:', {
+                error: error instanceof Error ? error.message : 'Unknown error',
+                stack: error instanceof Error ? error.stack : undefined,
+                chatId: message.chat.id
+            });
             throw error;
         }
     }
