@@ -69,7 +69,7 @@ Previous messages:
 Current message from user {{username}}: {{currentMessage}}
 ` + shouldRespondFooter;
 
-// Marketing template that incorporates character's style and behavior
+// Marketing template that uses character's own marketing instructions
 export const telegramMarketingTemplate = `
 # Character Context
 {{knowledge}}
@@ -84,15 +84,11 @@ export const telegramMarketingTemplate = `
 {{style.chat}}
 {{style.avoid}}
 
-# Marketing Task
-Generate an engaging marketing message that promotes our services. Stay true to the character's personality and style.
-The message should be natural, not overly promotional, and maintain the character's unique voice.
+# Marketing Instructions
+{{style.marketing}}
 
-Remember to:
-1. Use the character's unique speaking style and mannerisms
-2. Keep the message engaging and conversational
-3. Subtly promote our services without being too pushy
-4. Stay within the character's knowledge and expertise
+# Task
+Generate a casual message to share in the group chat.
 ` + messageCompletionFooter;
 
 const MAX_MESSAGE_LENGTH = 4096; // Telegram's max message length
@@ -127,8 +123,8 @@ export class MessageManager {
     // Marketing-related fields
     private targetGroups: Set<string> = new Set();
     private lastMarketingTimes: Map<string, number> = new Map();
-    private readonly MIN_MARKETING_INTERVAL = 1.5 * 60 * 1000; // 1.5 minutes
-    private readonly MAX_MARKETING_INTERVAL = 2.5 * 60 * 1000; // 2.5 minutes
+    private readonly MIN_MARKETING_INTERVAL = 15 * 60 * 1000; // 15 minutes
+    private readonly MAX_MARKETING_INTERVAL = 45 * 60 * 1000; // 45 minutes
     private readonly MAX_MARKETING_MESSAGES_PER_GROUP = 96; // Max marketing messages per group per day
     private marketingEnabled: boolean = false;
 
