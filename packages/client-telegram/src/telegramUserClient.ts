@@ -294,6 +294,29 @@ export class TelegramUserClient {
         }
     }
 
+    async getDialogById(chatId: string | number): Promise<Dialog | null> {
+        try {
+            // Get all dialogs (chats/channels/groups)
+            const dialogs = await this.client.getDialogs({});
+            
+            // Find the dialog with matching ID
+            const dialog = dialogs.find(d => d.id?.toString() === chatId.toString());
+            
+            if (!dialog) {
+                elizaLogger.warn(`Could not find dialog with ID: ${chatId}`);
+                return null;
+            }
+
+            return dialog;
+        } catch (error) {
+            elizaLogger.error('Error getting dialog by ID:', {
+                error: error instanceof Error ? error.message : String(error),
+                chatId
+            });
+            return null;
+        }
+    }
+
     private async reconnectWithBackoff(attempt: number = 0): Promise<void> {
         const maxAttempts = 10;
         const baseDelay = 1000; // 1 second

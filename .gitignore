@@ -1,7 +1,7 @@
 node_modules
 /out
 
-.env
+#.env
 .env.production
 .env.local
 .env_main

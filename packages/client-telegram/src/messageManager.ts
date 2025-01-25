@@ -123,8 +123,16 @@ export class MessageManager {
     // Marketing-related fields
     private targetGroups: Set<string> = new Set();
     private lastMarketingTimes: Map<string, number> = new Map();
+    private groupMessageCounts: Map<string, number> = new Map(); // Track messages since last bot message
+    private groupTimeReductions: Map<string, number> = new Map(); // Track accumulated time reductions
+    
+    // Base timing constants
     private readonly MIN_MARKETING_INTERVAL = 15 * 60 * 1000; // 15 minutes
     private readonly MAX_MARKETING_INTERVAL = 45 * 60 * 1000; // 45 minutes
+    private readonly BASE_WAIT_TIME = 6 * 60 * 60 * 1000; // 6 hours base wait time
+    private readonly MIN_MESSAGES_BEFORE_REPLY = 20; // Minimum messages before allowing reply
+    private readonly TIME_REDUCTION_PER_MESSAGE = 15 * 60 * 1000; // 15 minutes reduction per active period
+    private readonly MIN_WAIT_TIME = 30 * 60 * 1000; // Minimum 30 minutes between messages
     private readonly MAX_MARKETING_MESSAGES_PER_GROUP = 96; // Max marketing messages per group per day
     private marketingEnabled: boolean = false;
 
@@ -206,16 +214,83 @@ export class MessageManager {
         }
     }
 
+    private canSendMarketingMessage(dialog: Dialog): boolean {
+        const groupId = dialog.id.toString();
+        const now = Date.now();
+        const lastMessageTime = this.lastMarketingTimes.get(groupId) || 0;
+        const messageCount = this.groupMessageCounts.get(groupId) || 0;
+        const timeReduction = this.groupTimeReductions.get(groupId) || 0;
+
+        // Calculate required wait time with reductions
+        const requiredWaitTime = Math.max(
+            this.MIN_WAIT_TIME,
+            this.BASE_WAIT_TIME - timeReduction
+        );
+
+        // Check if enough time has passed and enough messages have been posted
+        const timeOk = (now - lastMessageTime) >= requiredWaitTime;
+        const messagesOk = messageCount >= this.MIN_MESSAGES_BEFORE_REPLY;
+
+        elizaLogger.log(`Marketing check for ${dialog.title}:`, {
+            timePassedMinutes: Math.floor((now - lastMessageTime) / (60 * 1000)),
+            requiredWaitTimeMinutes: Math.floor(requiredWaitTime / (60 * 1000)),
+            messageCount,
+            minMessages: this.MIN_MESSAGES_BEFORE_REPLY,
+            timeReductionMinutes: Math.floor(timeReduction / (60 * 1000)),
+            canSend: timeOk && messagesOk
+        });
+
+        return timeOk && messagesOk;
+    }
+
+    private updateGroupActivity(dialog: Dialog) {
+        const groupId = dialog.id.toString();
+        
+        // Increment message count
+        const currentCount = this.groupMessageCounts.get(groupId) || 0;
+        this.groupMessageCounts.set(groupId, currentCount + 1);
+
+        // If we've reached message threshold, add time reduction
+        if ((currentCount + 1) % this.MIN_MESSAGES_BEFORE_REPLY === 0) {
+            const currentReduction = this.groupTimeReductions.get(groupId) || 0;
+            const newReduction = Math.min(
+                this.BASE_WAIT_TIME - this.MIN_WAIT_TIME, // Don't reduce below minimum wait time
+                currentReduction + this.TIME_REDUCTION_PER_MESSAGE
+            );
+            this.groupTimeReductions.set(groupId, newReduction);
+            
+            elizaLogger.log(`Updated time reduction for ${dialog.title}:`, {
+                newReductionMinutes: Math.floor(newReduction / (60 * 1000)),
+                messageCount: currentCount + 1
+            });
+        }
+    }
+
+    private resetGroupCounters(dialog: Dialog) {
+        const groupId = dialog.id.toString();
+        this.groupMessageCounts.set(groupId, 0);
+        this.lastMarketingTimes.set(groupId, Date.now());
+    }
+
     private async sendMarketingMessage(dialog: Dialog): Promise<void> {
         try {
             const groupId = dialog.id.toString();
-            const now = Date.now();
-
-            elizaLogger.log(`Attempting to send marketing message to ${dialog.title} (${groupId})`);
+            elizaLogger.log(`Checking if we can send marketing message to ${dialog.title} (${groupId})`);
 
             // Check if marketing is enabled
             if (!this.marketingEnabled) {
                 elizaLogger.log(`Marketing is disabled for group: ${dialog.title}`);
+                return;
+            }
+
+            // Check if we can send a message based on time and activity
+            if (!this.canSendMarketingMessage(dialog)) {
+                elizaLogger.log(`Conditions not met for marketing message in ${dialog.title}`);
+                
+                // Schedule next check
+                const nextCheck = Math.floor(Math.random() * (this.MAX_MARKETING_INTERVAL - this.MIN_MARKETING_INTERVAL) + this.MIN_MARKETING_INTERVAL);
+                setTimeout(() => this.sendMarketingMessage(dialog), nextCheck);
+                elizaLogger.log(`📅 Scheduled next check for ${dialog.title} in ${Math.floor(nextCheck / 60000)} minutes`);
                 return;
             }
 
@@ -326,7 +401,7 @@ export class MessageManager {
 
             await this.runtime.messageManager.createMemory(responseMemory);
 
-            this.lastMarketingTimes.set(groupId, now);
+            this.lastMarketingTimes.set(groupId, Date.now());
             elizaLogger.success(`✅ Sent marketing message to ${dialog.title}`);
 
             // Schedule next marketing message
@@ -353,8 +428,14 @@ export class MessageManager {
         }
     }
 
-    async handleMessage(message: Message): Promise<Content | null> {
+    public async handleMessage(message: Message): Promise<Content | null> {
         try {
+            // Update group activity when any message is received
+            const dialog = await this.client.getDialogById(message.chat.id);
+            if (dialog) {
+                this.updateGroupActivity(dialog);
+            }
+
             elizaLogger.log('🔄 Starting message processing:', {
                 text: message.text,
                 chatId: message.chat.id,
