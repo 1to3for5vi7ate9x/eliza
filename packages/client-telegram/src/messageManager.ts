@@ -26,6 +26,7 @@ import {
     TIMING_CONSTANTS,
     RESPONSE_CHANCES,
 } from "./constants";
+import { TelegramClient, Dialog } from 'telegram';
 
 // Base templates that incorporate character's style and behavior
 export const telegramMessageHandlerTemplate = `
@@ -68,6 +69,32 @@ Previous messages:
 Current message from user {{username}}: {{currentMessage}}
 ` + shouldRespondFooter;
 
+// Marketing template that incorporates character's style and behavior
+export const telegramMarketingTemplate = `
+# Character Context
+{{knowledge}}
+
+# About {{agentName}}:
+{{bio}}
+{{lore}}
+{{topics}}
+
+# Character Style
+{{style.all}}
+{{style.chat}}
+{{style.avoid}}
+
+# Marketing Task
+Generate an engaging marketing message that promotes our services. Stay true to the character's personality and style.
+The message should be natural, not overly promotional, and maintain the character's unique voice.
+
+Remember to:
+1. Use the character's unique speaking style and mannerisms
+2. Keep the message engaging and conversational
+3. Subtly promote our services without being too pushy
+4. Stay within the character's knowledge and expertise
+` + messageCompletionFooter;
+
 const MAX_MESSAGE_LENGTH = 4096; // Telegram's max message length
 
 export interface Message {
@@ -88,6 +115,7 @@ export interface Message {
 
 export class MessageManager {
     private runtime: IAgentRuntime;
+    private client: TelegramClient;
     private interestChats: {
         [key: string]: {
             lastMessageSent: number;
@@ -96,9 +124,237 @@ export class MessageManager {
         };
     } = {};
 
-    constructor(runtime: IAgentRuntime) {
+    // Marketing-related fields
+    private targetGroups: Set<string> = new Set();
+    private lastMarketingTimes: Map<string, number> = new Map();
+    private readonly MIN_MARKETING_INTERVAL = 1.5 * 60 * 1000; // 1.5 minutes
+    private readonly MAX_MARKETING_INTERVAL = 2.5 * 60 * 1000; // 2.5 minutes
+    private readonly MAX_MARKETING_MESSAGES_PER_GROUP = 96; // Max marketing messages per group per day
+    private marketingEnabled: boolean = false;
+
+    constructor(runtime: IAgentRuntime, client: TelegramClient) {
         elizaLogger.log('Initializing MessageManager');
         this.runtime = runtime;
+        this.client = client;
+    }
+
+    async startMarketing(): Promise<void> {
+        try {
+            // Use existing TELEGRAM_ALLOWED_GROUPS setting
+            const allowedGroupsStr = this.runtime.getSetting('TELEGRAM_ALLOWED_GROUPS');
+            if (allowedGroupsStr) {
+                // Normalize group names by removing t.me/ prefix
+                this.targetGroups = new Set(
+                    allowedGroupsStr.split(',')
+                        .map(g => g.trim())
+                        .map(g => this.normalizeGroupName(g))
+                );
+            }
+
+            // Initialize marketing for each group
+            await this.initializeGroupMarketing();
+            this.marketingEnabled = true;
+
+            elizaLogger.log('✅ Marketing functionality started successfully');
+            elizaLogger.log('📢 Marketing in groups:', Array.from(this.targetGroups));
+        } catch (error) {
+            elizaLogger.error('Failed to start marketing:', error);
+            throw error;
+        }
+    }
+
+    async stopMarketing(): Promise<void> {
+        elizaLogger.log('Stopping marketing functionality...');
+        this.marketingEnabled = false;
+        elizaLogger.success('✅ Marketing functionality stopped');
+    }
+
+    private normalizeGroupName(name: string): string {
+        // Remove t.me/ prefix if present
+        return name.replace(/^t\.me\//, '');
+    }
+
+    private async initializeGroupMarketing(): Promise<void> {
+        for (const groupName of this.targetGroups) {
+            try {
+                elizaLogger.log(`Looking for group: ${groupName}`);
+                const dialogs = await this.client.getDialogs({});
+                elizaLogger.log(`Found ${dialogs.length} dialogs`);
+                
+                const dialog = dialogs.find(d => {
+                    const title = this.normalizeGroupName(d.title || '');
+                    const name = this.normalizeGroupName(d.name || '');
+                    const matchesTitle = title === groupName;
+                    const matchesName = name === groupName;
+                    
+                    elizaLogger.log(`Checking dialog - Title: ${title}, Name: ${name}, Matches: ${matchesTitle || matchesName}`);
+                    return matchesTitle || matchesName;
+                });
+                
+                if (dialog) {
+                    elizaLogger.log(`Found group ${groupName} with ID: ${dialog.id}`);
+                    // Schedule first marketing message
+                    const delay = Math.floor(Math.random() * (this.MAX_MARKETING_INTERVAL - this.MIN_MARKETING_INTERVAL) + this.MIN_MARKETING_INTERVAL);
+                    setTimeout(() => this.sendMarketingMessage(dialog), delay);
+                    elizaLogger.log(`📅 Scheduled first marketing message for ${groupName} in ${Math.floor(delay / 1000)} seconds`);
+                } else {
+                    elizaLogger.warn(`⚠️ Could not find group: ${groupName}. Available groups:`, 
+                        dialogs.map(d => ({ title: d.title, name: d.name })));
+                }
+            } catch (error) {
+                elizaLogger.error(`Failed to initialize marketing for group ${groupName}:`, {
+                    error: error instanceof Error ? error.message : String(error),
+                    stack: error instanceof Error ? error.stack : undefined
+                });
+            }
+        }
+    }
+
+    private async sendMarketingMessage(dialog: Dialog): Promise<void> {
+        try {
+            const groupId = dialog.id.toString();
+            const now = Date.now();
+
+            elizaLogger.log(`Attempting to send marketing message to ${dialog.title} (${groupId})`);
+
+            // Check if marketing is enabled
+            if (!this.marketingEnabled) {
+                elizaLogger.log(`Marketing is disabled for group: ${dialog.title}`);
+                return;
+            }
+
+            // Check if we've exceeded max messages per day for this group
+            const messageCount = await this.getMarketingMessageCountToday(dialog);
+            elizaLogger.log(`Current message count for ${dialog.title}: ${messageCount}/${this.MAX_MARKETING_MESSAGES_PER_GROUP}`);
+            
+            if (messageCount >= this.MAX_MARKETING_MESSAGES_PER_GROUP) {
+                elizaLogger.log(`⚠️ Max marketing messages reached for group: ${dialog.title}`);
+                return;
+            }
+
+            // Generate marketing message using character profile
+            elizaLogger.log(`Generating marketing message for ${dialog.title}`);
+            
+            const memory = {
+                id: stringToUuid(`marketing-${Date.now()}`),
+                timestamp: Date.now(),
+                type: 'marketing',
+                content: {
+                    text: 'Generate a marketing message to promote our services',
+                    type: 'text'
+                },
+                metadata: {
+                    platform: 'telegram',
+                    channelId: groupId,
+                    messageType: 'marketing'
+                },
+                roomId: stringToUuid(`${groupId}-${this.runtime.agentId}`),
+                agentId: this.runtime.agentId,
+                userId: stringToUuid(this.client.session.userId?.toString() || 'system')
+            };
+
+            // Create state with character information
+            const state = {
+                character: this.runtime.character,
+                agentName: this.runtime.character?.name || 'Agent',
+                bio: this.runtime.character?.description || '',
+                style: this.runtime.character?.style || {},
+                topics: this.runtime.character?.topics || [],
+                knowledge: this.runtime.character?.knowledge || [],
+                lore: this.runtime.character?.lore || '',
+                system: this.runtime.character?.system || '',
+                prompt: {
+                    text: 'Generate an engaging marketing message that promotes our services while staying true to the character\'s style and personality.',
+                    type: 'marketing'
+                }
+            };
+
+            elizaLogger.log(`Generating response for ${dialog.title} with character:`, {
+                name: state.agentName,
+                hasStyle: !!state.style,
+                hasTopics: !!state.topics?.length,
+                hasKnowledge: !!state.knowledge?.length
+            });
+
+            const response = await generateMessageResponse({
+                runtime: this.runtime,
+                context: composeContext({
+                    state,
+                    template: telegramMarketingTemplate
+                }),
+                modelClass: ModelClass.LARGE
+            });
+
+            // Ensure response is properly formatted
+            let responseText: string;
+            if (typeof response === 'string') {
+                responseText = response;
+            } else if (typeof response === 'object' && response.text) {
+                responseText = String(response.text);
+            } else {
+                elizaLogger.warn('Invalid response format:', response);
+                return;
+            }
+
+            elizaLogger.log(`Generated message for ${dialog.title}, simulating typing...`);
+            // Simulate typing before sending
+            try {
+                await this.client.setTyping(dialog.id);
+                await new Promise(resolve => setTimeout(resolve, responseText.length * 100));
+                await this.client.setTyping(dialog.id, { typing: false });
+            } catch (error) {
+                elizaLogger.warn(`Failed to set typing indicator for ${dialog.title}:`, error);
+                // Continue anyway since this is not critical
+            }
+
+            elizaLogger.log(`Sending message to ${dialog.title}`);
+            await this.client.sendMessage(dialog.id, {
+                message: responseText,
+                parseMode: 'markdown'
+            });
+
+            // Create response memory
+            const responseMemory: Memory = {
+                id: stringToUuid(Date.now().toString()),
+                agentId: this.runtime.agentId,
+                userId: stringToUuid(this.client.session.userId?.toString() || 'system'),
+                roomId: stringToUuid(`${groupId}-${this.runtime.agentId}`),
+                content: {
+                    text: responseText,
+                    source: 'telegram',
+                    type: 'marketing'
+                },
+                createdAt: Date.now(),
+                embedding: getEmbeddingZeroVector(),
+            };
+
+            await this.runtime.messageManager.createMemory(responseMemory);
+
+            this.lastMarketingTimes.set(groupId, now);
+            elizaLogger.success(`✅ Sent marketing message to ${dialog.title}`);
+
+            // Schedule next marketing message
+            const nextDelay = Math.floor(Math.random() * (this.MAX_MARKETING_INTERVAL - this.MIN_MARKETING_INTERVAL) + this.MIN_MARKETING_INTERVAL);
+            setTimeout(() => this.sendMarketingMessage(dialog), nextDelay);
+            elizaLogger.log(`📅 Scheduled next message for ${dialog.title} in ${Math.floor(nextDelay / 60000)} minutes`);
+        } catch (error) {
+            elizaLogger.error(`Failed to send marketing message to ${dialog.title}:`, {
+                error: error instanceof Error ? error.message : String(error),
+                stack: error instanceof Error ? error.stack : undefined,
+                dialogId: dialog.id,
+                dialogTitle: dialog.title,
+                dialogType: dialog.type,
+                runtime: {
+                    hasModelProvider: !!this.runtime?.modelProvider,
+                    hasCharacter: !!this.runtime?.character
+                }
+            });
+            
+            // Schedule retry even if failed
+            const retryDelay = Math.floor(Math.random() * (this.MAX_MARKETING_INTERVAL - this.MIN_MARKETING_INTERVAL) + this.MIN_MARKETING_INTERVAL);
+            setTimeout(() => this.sendMarketingMessage(dialog), retryDelay);
+            elizaLogger.log(`📅 Scheduled retry for ${dialog.title} in ${Math.floor(retryDelay / 60000)} minutes`);
+        }
     }
 
     async handleMessage(message: Message): Promise<Content | null> {
@@ -117,6 +373,17 @@ export class MessageManager {
             // Ensure message text is properly formatted
             message.text = typeof message.text === 'object' ?
                 JSON.stringify(message.text) : String(message.text || '');
+
+            // Check if we should respond based on character's topics and rules
+            const shouldRespond = this.shouldRespondToMessage(message.text, message.chat.id);
+            
+            if (!shouldRespond) {
+                elizaLogger.log('Decided not to respond', {
+                    reason: 'Message does not match character topics or rules',
+                    message: message.text
+                });
+                return null;
+            }
 
             // Create memory for the message
             let memory = await this.createMessageMemory(message);
@@ -148,29 +415,6 @@ export class MessageManager {
             // Add current message and user info
             state.currentMessage = message.text;
             state.username = message.from.username || 'User';
-
-            // Use AI to decide whether to respond using character's style
-            let shouldRespond = await generateShouldRespond({
-                runtime: this.runtime,
-                context: composeContext({
-                    state,
-                    template: this.runtime.character?.templates?.telegramShouldRespondTemplate || telegramShouldRespondTemplate
-                }),
-                modelClass: ModelClass.LARGE
-            });
-
-            elizaLogger.log('🤔 Should respond decision:', {
-                decision: shouldRespond,
-                message: message.text
-            });
-
-            if (shouldRespond !== 'RESPOND') {
-                elizaLogger.log('Decided not to respond', {
-                    reason: shouldRespond,
-                    message: message.text
-                });
-                return null;
-            }
 
             // Generate response using character's personality
             let response = await generateMessageResponse({
@@ -376,6 +620,84 @@ export class MessageManager {
         } catch (error) {
             elizaLogger.error('Error splitting message:', error);
             throw error;
+        }
+    }
+
+    private shouldRespondToMessage(messageText: string, chatId: string): boolean {
+        if (!this.runtime.character) {
+            return false;
+        }
+
+        const text = messageText.toLowerCase();
+        
+        // Check if message contains character's name or aliases
+        const nameMatch = text.includes(this.runtime.character.name.toLowerCase());
+        
+        // Check if message matches character's topics
+        const topicMatch = this.runtime.character.topics?.some(topic => 
+            text.includes(topic.toLowerCase())
+        );
+
+        // Get character's response rules
+        const responseRules = this.runtime.character.style?.response_rules || [];
+        
+        // Check against response patterns
+        const respondPatterns = responseRules
+            .filter(rule => rule.toLowerCase().startsWith('respond:'))
+            .map(rule => rule.toLowerCase().replace('respond:', '').trim().split(','))
+            .flat()
+            .map(pattern => pattern.trim());
+            
+        const ignorePatterns = responseRules
+            .filter(rule => rule.toLowerCase().startsWith('ignore:'))
+            .map(rule => rule.toLowerCase().replace('ignore:', '').trim().split(','))
+            .flat()
+            .map(pattern => pattern.trim());
+            
+        const shouldRespond = respondPatterns.some(pattern => text.includes(pattern));
+        const shouldIgnore = ignorePatterns.some(pattern => text.includes(pattern));
+        
+        // Calculate similarity with recent messages to avoid repetition
+        if (this.interestChats[chatId]) {
+            const recentMessages = this.interestChats[chatId].messages.slice(-5);
+            const similarMessage = recentMessages.find(msg => 
+                cosineSimilarity(msg.content.text.toLowerCase(), text) > 0.8
+            );
+            if (similarMessage) {
+                return false;
+            }
+        }
+
+        return (nameMatch || topicMatch || shouldRespond) && !shouldIgnore;
+    }
+
+    private async getMarketingMessageCountToday(dialog: Dialog): Promise<number> {
+        try {
+            elizaLogger.log(`Getting message count for ${dialog.title}`);
+            const messages = await this.client.getMessages(dialog, {
+                limit: this.MAX_MARKETING_MESSAGES_PER_GROUP,
+                fromUser: this.client.session.userId
+            });
+            elizaLogger.log(`Retrieved ${messages.length} messages for ${dialog.title}`);
+
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+
+            const todayMessages = messages.filter(msg => {
+                const msgDate = new Date(msg.date * 1000);
+                return msgDate >= today;
+            });
+
+            elizaLogger.log(`Found ${todayMessages.length} messages from today for ${dialog.title}`);
+            return todayMessages.length;
+        } catch (error) {
+            elizaLogger.error(`Failed to get message count for ${dialog.title}:`, {
+                error: error instanceof Error ? error.message : String(error),
+                stack: error instanceof Error ? error.stack : undefined,
+                dialogId: dialog.id,
+                dialogTitle: dialog.title
+            });
+            return 0;
         }
     }
 }

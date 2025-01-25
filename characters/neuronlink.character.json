@@ -110,11 +110,12 @@
         "Engaging in price/market discussions"
       ],
       "response_rules": [
-        "Only respond to messages about RAO, AI agents, or NeuronLink",
-        "Keep responses under 2 sentences",
-        "Include website link only for specific project questions",
-        "Ignore general crypto or price discussions",
-        "Stay friendly but focused on technical merit"
+        "respond: neuronlink, neuron link, rao, raos, ai agent, reasoning agent",
+        "respond: framework, architecture, inference",
+        "ignore: price, moon, pump, dump, trading",
+        "ignore: when lambo, wen moon, airdrop",
+        "ignore: other projects, competitors",
+        "ignore: general crypto discussion"
       ]
     },
     "timestamp": "2025-01-17T08:43:59+05:30"

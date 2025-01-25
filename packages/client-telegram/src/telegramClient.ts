@@ -11,6 +11,11 @@ export class TelegramClient {
     private backend;
     private backendToken;
     private tgTrader;
+    private isConnected: boolean = false;
+    private reconnectAttempts: number = 0;
+    private readonly MAX_RECONNECT_ATTEMPTS: number = 10;
+    private readonly RECONNECT_DELAY: number = 5000;
+    private reconnectTimeout?: NodeJS.Timeout;
 
     constructor(runtime: IAgentRuntime, botToken: string) {
         elizaLogger.log("📱 Constructing new TelegramClient...");
@@ -38,6 +43,7 @@ export class TelegramClient {
         try {
             await this.initializeBot();
             this.setupMessageHandlers();
+            this.setupConnectionHandlers();
             this.setupShutdownHandlers();
         } catch (error) {
             elizaLogger.error("❌ Failed to launch Telegram bot:", error);
@@ -46,16 +52,21 @@ export class TelegramClient {
     }
 
     private async initializeBot(): Promise<void> {
-        this.bot.launch({ dropPendingUpdates: true });
-        elizaLogger.log(
-            "✨ Telegram bot successfully launched and is running!"
-        );
+        try {
+            await this.bot.launch({ dropPendingUpdates: true });
+            this.isConnected = true;
+            this.reconnectAttempts = 0;
+            elizaLogger.log("✨ Telegram bot successfully launched and is running!");
 
-        const botInfo = await this.bot.telegram.getMe();
-        this.bot.botInfo = botInfo;
-        elizaLogger.success(`Bot username: @${botInfo.username}`);
+            const botInfo = await this.bot.telegram.getMe();
+            this.bot.botInfo = botInfo;
+            elizaLogger.success(`Bot username: @${botInfo.username}`);
 
-        this.messageManager.bot = this.bot;
+            this.messageManager.bot = this.bot;
+        } catch (error) {
+            elizaLogger.error("Failed to initialize bot:", error);
+            await this.handleConnectionError();
+        }
     }
 
     private async isGroupAuthorized(ctx: Context): Promise<boolean> {
@@ -230,11 +241,61 @@ export class TelegramClient {
                 ctx.message.document.file_name
             );
         });
+    }
 
-        this.bot.catch((err, ctx) => {
-            elizaLogger.error(`❌ Telegram Error for ${ctx.updateType}:`, err);
-            ctx.reply("An unexpected error occurred. Please try again later.");
+    private setupConnectionHandlers(): void {
+        // Handle connection errors
+        this.bot.catch((error: any) => {
+            elizaLogger.error("Telegram bot error:", error);
+            this.handleConnectionError();
         });
+
+        // Handle webhook errors
+        if (this.bot.telegram.webhookReply) {
+            this.bot.telegram.webhook.on('error', (error: Error) => {
+                elizaLogger.error("Webhook error:", error);
+                this.handleConnectionError();
+            });
+        }
+    }
+
+    private async handleConnectionError(): Promise<void> {
+        this.isConnected = false;
+        elizaLogger.warn(`[Reconnect] Connection lost. Attempt ${this.reconnectAttempts + 1}/${this.MAX_RECONNECT_ATTEMPTS}`);
+
+        if (this.reconnectAttempts >= this.MAX_RECONNECT_ATTEMPTS) {
+            elizaLogger.error("Max reconnection attempts reached. Stopping bot.");
+            await this.stop();
+            return;
+        }
+
+        this.reconnectAttempts++;
+
+        // Clear any existing reconnect timeout
+        if (this.reconnectTimeout) {
+            clearTimeout(this.reconnectTimeout);
+        }
+
+        // Set up reconnection with exponential backoff
+        const delay = this.RECONNECT_DELAY * Math.pow(2, this.reconnectAttempts - 1);
+        elizaLogger.info(`[Reconnect] Attempting to reconnect in ${delay}ms...`);
+
+        this.reconnectTimeout = setTimeout(async () => {
+            try {
+                elizaLogger.info("[Reconnect] Closing current connection...");
+                await this.bot.stop();
+                
+                elizaLogger.info("[Reconnect] Initializing new connection...");
+                await this.initializeBot();
+                
+                if (this.isConnected) {
+                    elizaLogger.success("[Reconnect] Successfully reconnected!");
+                }
+            } catch (error) {
+                elizaLogger.error("[Reconnect] Failed to reconnect:", error);
+                await this.handleConnectionError();
+            }
+        }, delay);
     }
 
     private setupShutdownHandlers(): void {
@@ -260,8 +321,16 @@ export class TelegramClient {
     }
 
     public async stop(): Promise<void> {
-        elizaLogger.log("Stopping Telegram bot...");
-        await this.bot.stop();
-        elizaLogger.log("Telegram bot stopped");
+        elizaLogger.info("Stopping Telegram bot...");
+        try {
+            if (this.reconnectTimeout) {
+                clearTimeout(this.reconnectTimeout);
+            }
+            await this.bot.stop();
+            this.isConnected = false;
+            elizaLogger.info("Telegram bot stopped successfully");
+        } catch (error) {
+            elizaLogger.error("Error stopping bot:", error);
+        }
     }
 }
