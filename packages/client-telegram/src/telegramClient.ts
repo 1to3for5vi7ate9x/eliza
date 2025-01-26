@@ -100,147 +100,35 @@ export class TelegramClient {
     }
 
     private setupMessageHandlers(): void {
-        elizaLogger.log("Setting up message handler...");
-
-        this.bot.on(message("new_chat_members"), async (ctx) => {
+        elizaLogger.log("Setting up message handlers...");
+        
+        // Handle messages
+        this.bot.on(message('text'), async (ctx) => {
             try {
-                const newMembers = ctx.message.new_chat_members;
-                const isBotAdded = newMembers.some(
-                    (member) => member.id === ctx.botInfo.id
-                );
-
-                if (isBotAdded && !(await this.isGroupAuthorized(ctx))) {
-                    return;
-                }
-            } catch (error) {
-                elizaLogger.error("Error handling new chat members:", error);
-            }
-        });
-
-        this.bot.on("message", async (ctx) => {
-            try {
-                // Check group authorization first
-                if (!(await this.isGroupAuthorized(ctx))) {
-                    return;
-                }
-
-                if (!ctx.message?.text) {
-                    elizaLogger.warn("Received message without text content");
-                    return;
-                }
-
-                if (this.tgTrader) {
-                    const userId = ctx.from?.id.toString();
-                    const username =
-                        ctx.from?.username || ctx.from?.first_name || "Unknown";
-                    if (!userId) {
-                        elizaLogger.warn(
-                            "Received message from a user without an ID."
-                        );
-                        return;
-                    }
-                    try {
-                        await getOrCreateRecommenderInBe(
-                            userId,
-                            username,
-                            this.backendToken,
-                            this.backend
-                        );
-                    } catch (error) {
-                        elizaLogger.error(
-                            "Error getting or creating recommender in backend",
-                            error
-                        );
-                    }
-                }
-
-                // Convert Telegram message to our Message type
-                const message: Message = {
+                const msg = {
                     text: ctx.message.text,
                     from: {
-                        id: ctx.from.id.toString(),
-                        username: ctx.from.username || ctx.from.first_name || "Unknown"
+                        id: ctx.message.from.id.toString(),
+                        username: ctx.message.from.username,
+                        firstName: ctx.message.from.first_name
                     },
                     chat: {
-                        id: ctx.chat.id.toString(),
-                        type: ctx.chat.type
+                        id: ctx.message.chat.id.toString(),
+                        type: ctx.message.chat.type,
+                        title: 'title' in ctx.message.chat ? ctx.message.chat.title : undefined
                     }
                 };
 
-                elizaLogger.log('📨 Processing message with character:', {
-                    message: message.text,
-                    character: this.runtime.character.name,
-                    characterTopics: this.runtime.character.topics
-                });
-
-                // Handle message and get response
-                const response = await this.messageManager.handleMessage(message);
-                
-                if (response && response.content) {
-                    elizaLogger.log('📤 Sending response to Telegram:', {
-                        response: response.content,
-                        character: this.runtime.character.name
-                    });
-                    
-                    // Split long messages if needed
-                    const MAX_LENGTH = 4096;
-                    const text = response.content;
-                    
-                    if (text.length <= MAX_LENGTH) {
-                        await ctx.reply(text);
-                    } else {
-                        // Split long messages
-                        const chunks = text.match(new RegExp(`.{1,${MAX_LENGTH}}`, 'g')) || [];
-                        for (const chunk of chunks) {
-                            await ctx.reply(chunk);
-                        }
-                    }
-                } else {
-                    elizaLogger.log('No response to send', {
-                        reason: 'Response was null or empty',
-                        message: message.text
-                    });
+                const response = await this.messageManager.handleMessage(msg);
+                if (response && response.text) {
+                    await ctx.reply(response.text);
                 }
             } catch (error) {
-                // Enhanced error logging
-                elizaLogger.error("❌ Error handling message:", {
-                    error: error instanceof Error ? error.message : 'Unknown error',
-                    stack: error instanceof Error ? error.stack : undefined,
-                    character: this.runtime.character?.name,
-                    message: ctx.message?.text,
-                    chatId: ctx.chat?.id,
-                    userId: ctx.from?.id
-                });
-                
-                // Don't try to reply if we've left the group or been kicked
-                if (error?.response?.error_code !== 403) {
-                    try {
-                        await ctx.reply(
-                            "An error occurred while processing your message."
-                        );
-                    } catch (replyError) {
-                        elizaLogger.error(
-                            "Failed to send error message:",
-                            replyError
-                        );
-                    }
-                }
+                elizaLogger.error("Error handling message:", error);
             }
         });
 
-        this.bot.on("photo", (ctx) => {
-            elizaLogger.log(
-                "📸 Received photo message with caption:",
-                ctx.message.caption
-            );
-        });
-
-        this.bot.on("document", (ctx) => {
-            elizaLogger.log(
-                "📎 Received document message:",
-                ctx.message.document.file_name
-            );
-        });
+        elizaLogger.log("✅ Message handlers setup complete");
     }
 
     private setupConnectionHandlers(): void {
@@ -331,6 +219,28 @@ export class TelegramClient {
             elizaLogger.info("Telegram bot stopped successfully");
         } catch (error) {
             elizaLogger.error("Error stopping bot:", error);
+        }
+    }
+
+    // Add method to get dialog by ID
+    public async getDialogById(chatId: string | number) {
+        try {
+            const chat = await this.bot.telegram.getChat(chatId);
+            if (!chat) {
+                elizaLogger.warn(`Could not find chat with ID: ${chatId}`);
+                return null;
+            }
+            return {
+                id: chat.id.toString(),
+                title: 'title' in chat ? chat.title : undefined,
+                type: chat.type
+            };
+        } catch (error) {
+            elizaLogger.error('Error getting chat by ID:', {
+                error: error instanceof Error ? error.message : String(error),
+                chatId
+            });
+            return null;
         }
     }
 }

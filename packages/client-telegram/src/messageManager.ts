@@ -430,21 +430,28 @@ export class MessageManager {
 
     public async handleMessage(message: Message): Promise<Content | null> {
         try {
-            // Update group activity when any message is received
-            const dialog = await this.client.getDialogById(message.chat.id);
-            if (dialog) {
-                this.updateGroupActivity(dialog);
+            // Handle both Telegram and Discord message structures
+            const chatInfo = {
+                id: message.chat?.id || message.channelId,
+                type: message.chat?.type || 'channel',
+                title: message.chat?.title
+            };
+
+            if (!chatInfo.id) {
+                elizaLogger.warn('Invalid message format: Missing chat/channel ID');
+                return null;
             }
 
             elizaLogger.log('🔄 Starting message processing:', {
                 text: message.text,
-                chatId: message.chat.id,
-                userId: message.from.id
+                chatId: chatInfo.id,
+                userId: message.from?.id || message.author?.id
             });
 
             // Validate message
-            if (!message.from.id || !message.chat.id) {
-                throw new Error('Invalid message format: Missing required fields');
+            const userId = message.from?.id || message.author?.id;
+            if (!userId) {
+                throw new Error('Invalid message format: Missing user ID');
             }
 
             // Ensure message text is properly formatted
@@ -452,7 +459,7 @@ export class MessageManager {
                 JSON.stringify(message.text) : String(message.text || '');
 
             // Check if we should respond based on character's topics and rules
-            const shouldRespond = this.shouldRespondToMessage(message.text, message.chat.id);
+            const shouldRespond = this.shouldRespondToMessage(message.text, chatInfo.id);
             
             if (!shouldRespond) {
                 elizaLogger.log('Decided not to respond', {
@@ -467,7 +474,7 @@ export class MessageManager {
 
             // Compose state with chat history and character details
             let state = await this.runtime.composeState(memory);
-            const chatId = message.chat.id;
+            const chatId = chatInfo.id;
 
             // Add chat history context
             if (this.interestChats[chatId]) {
@@ -491,7 +498,7 @@ export class MessageManager {
 
             // Add current message and user info
             state.currentMessage = message.text;
-            state.username = message.from.username || 'User';
+            state.username = message.from?.username || message.author?.username || 'User';
 
             // Generate response using character's personality
             let response = await generateMessageResponse({
@@ -527,8 +534,8 @@ export class MessageManager {
             const responseMemory: Memory = {
                 id: stringToUuid(Date.now().toString()),
                 agentId: this.runtime.agentId,
-                userId: stringToUuid(message.from.id),
-                roomId: stringToUuid(message.chat.id + "-" + this.runtime.agentId),
+                userId: stringToUuid(message.from?.id || message.author?.id),
+                roomId: stringToUuid(message.chat?.id + "-" + this.runtime.agentId || message.channelId + "-" + this.runtime.agentId),
                 content: {
                     text: responseText,
                     source: 'telegram',
@@ -553,8 +560,8 @@ export class MessageManager {
                 error: error instanceof Error ? error.message : 'Unknown error',
                 stack: error instanceof Error ? error.stack : undefined,
                 message: message.text,
-                userId: message.from?.id,
-                chatId: message.chat?.id,
+                userId: message.from?.id || message.author?.id,
+                chatId: message.chat?.id || message.channelId,
                 character: this.runtime.character?.name
             });
             return null;
@@ -563,8 +570,8 @@ export class MessageManager {
 
     private async createMessageMemory(message: Message): Promise<Memory> {
         try {
-            const userId = stringToUuid(message.from.id);
-            const roomId = stringToUuid(message.chat.id + "-" + this.runtime.agentId);
+            const userId = stringToUuid(message.from?.id || message.author?.id);
+            const roomId = stringToUuid(message.chat?.id + "-" + this.runtime.agentId || message.channelId + "-" + this.runtime.agentId);
             const messageId = stringToUuid(Date.now().toString());
 
             // Ensure message content is properly formatted
@@ -582,8 +589,8 @@ export class MessageManager {
             await this.runtime.ensureConnection(
                 userId,
                 roomId,
-                message.from.username || '',
-                message.from.firstName || '',
+                message.from?.username || message.author?.username || '',
+                message.from?.firstName || message.author?.firstName || '',
                 'telegram'
             );
 
@@ -607,8 +614,8 @@ export class MessageManager {
                 error: error instanceof Error ? error.message : 'Unknown error',
                 stack: error instanceof Error ? error.stack : undefined,
                 message: message.text,
-                userId: message.from.id,
-                chatId: message.chat.id
+                userId: message.from?.id || message.author?.id,
+                chatId: message.chat?.id || message.channelId
             });
             throw error;
         }
@@ -616,7 +623,7 @@ export class MessageManager {
 
     private updateChatState(message: Message, response: string): void {
         try {
-            const chatId = message.chat.id;
+            const chatId = message.chat?.id || message.channelId;
 
             // Initialize chat state if not exists
             if (!this.interestChats[chatId]) {
@@ -635,8 +642,8 @@ export class MessageManager {
 
             // Add message to chat history with proper content structure
             this.interestChats[chatId].messages.push({
-                userId: message.from.id,
-                userName: message.from.username || message.from.firstName || 'Unknown',
+                userId: message.from?.id || message.author?.id,
+                userName: message.from?.username || message.author?.username || 'Unknown',
                 content: {
                     text: messageText,
                     source: 'telegram'
@@ -668,7 +675,7 @@ export class MessageManager {
             elizaLogger.error('Error updating chat state:', {
                 error: error instanceof Error ? error.message : 'Unknown error',
                 stack: error instanceof Error ? error.stack : undefined,
-                chatId: message.chat.id
+                chatId: message.chat?.id || message.channelId
             });
             throw error;
         }

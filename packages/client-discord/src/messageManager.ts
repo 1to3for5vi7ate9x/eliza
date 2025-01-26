@@ -267,15 +267,31 @@ export class MessageManager {
                 return false;
             }
 
+            // Get the channel
+            const channel = this.client.getClient().channels.cache.get(channelId);
+            if (!channel || !(channel instanceof TextChannel)) {
+                return false;
+            }
+
+            // Check if it's an allowed channel
+            const channelName = channel.name.toLowerCase();
+            if (!this.client.getAllowedChannels().has(channelName)) {
+                return false;
+            }
+
             const text = messageText.toLowerCase();
             
             // Check if message contains character's name or aliases
             const nameMatch = text.includes(this.runtime.character.name.toLowerCase());
             
             // Check if message matches character's topics
-            const topicMatch = this.runtime.character.topics?.some(topic => 
-                text.includes(topic.toLowerCase())
-            );
+            const topics = this.runtime.character.topics || [];
+            const topicMatch = topics.some(topic => {
+                const normalizedTopic = topic.toLowerCase();
+                // Check for exact word match or as part of compound words
+                const regex = new RegExp(`\\b${normalizedTopic}\\b|\\b${normalizedTopic}s?\\b|\\b${normalizedTopic}ing\\b`);
+                return regex.test(text);
+            });
 
             // Get character's response rules
             const responseRules = this.runtime.character.style?.response_rules || [];
@@ -288,9 +304,18 @@ export class MessageManager {
                 .map(pattern => pattern.trim());
 
             // Check if message matches any response patterns
-            const patternMatch = respondPatterns.some(pattern => text.includes(pattern));
+            const patternMatch = respondPatterns.some(pattern => {
+                const regex = new RegExp(`\\b${pattern}\\b`);
+                return regex.test(text);
+            });
 
-            // Generate response if any condition is met
+            // Only use AI-based shouldRespond if there's a topic match or name mention
+            // This prevents the bot from responding to completely off-topic messages
+            if (!nameMatch && !topicMatch && !patternMatch) {
+                return false;
+            }
+
+            // Double-check with AI if we should respond
             const shouldRespond = await generateShouldRespond({
                 runtime: this.runtime,
                 context: composeContext({
@@ -303,7 +328,16 @@ export class MessageManager {
                 modelClass: ModelClass.SMALL
             });
 
-            return nameMatch || topicMatch || patternMatch || shouldRespond;
+            elizaLogger.log('🤔 Should respond check:', {
+                channelName,
+                messageText: messageText.substring(0, 50),
+                nameMatch,
+                topicMatch,
+                patternMatch,
+                shouldRespond
+            });
+
+            return shouldRespond;
 
         } catch (error) {
             elizaLogger.error('Error checking if should respond:', error);
