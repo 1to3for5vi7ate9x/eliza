@@ -5,12 +5,14 @@ import { NewMessage } from 'telegram/events';
 import { Dialog } from 'telegram/tl/custom/dialog';
 import input from 'input';
 import { MessageManager } from './messageManager';
+import { MarketingManager } from './marketingManager';
 import { Message } from 'telegram/tl/custom/message';
 
 export class TelegramUserClient {
     private client: TelegramClient;
     private runtime: IAgentRuntime;
     private messageManager: MessageManager;
+    private marketingManager: MarketingManager;
     private allowedGroups: Set<string>;
     private stringSession: StringSession;
     private sessionString: string = '';
@@ -18,7 +20,6 @@ export class TelegramUserClient {
     constructor(runtime: IAgentRuntime) {
         elizaLogger.log('📱 Constructing new TelegramUserClient...');
         this.runtime = runtime;
-        this.messageManager = new MessageManager(this.runtime);
 
         const apiId = parseInt(runtime.getSetting('TELEGRAM_API_ID'), 10);
         const apiHash = runtime.getSetting('TELEGRAM_API_HASH');
@@ -46,6 +47,16 @@ export class TelegramUserClient {
         this.stringSession = new StringSession(savedSession || '');
         this.client = new TelegramClient(this.stringSession, apiId, apiHash, {
             connectionRetries: 5,
+            useWSS: true,
+            requestRetries: 5,
+            timeout: 30000,
+            autoReconnect: true,
+            floodSleepThreshold: 60,
+            deviceModel: "Eliza Client",
+            systemVersion: "1.0.0",
+            appVersion: "1.0.0",
+            langCode: "en",
+            systemLangCode: "en"
         });
 
         elizaLogger.log('✅ TelegramUserClient constructor completed');
@@ -55,8 +66,23 @@ export class TelegramUserClient {
         try {
             elizaLogger.log('🚀 Starting Telegram client...');
             await this.initializeClient();
+
+            // Initialize message manager with client
+            this.messageManager = new MessageManager(this.runtime, this.client);
+            
             await this.setupMessageHandlers();
+            await this.messageManager.startMarketing(); // Start marketing functionality
             this.setupShutdownHandlers();
+            
+            // Set up connection monitoring
+            setInterval(async () => {
+                try {
+                    await this.ensureConnection();
+                } catch (error) {
+                    elizaLogger.error('Failed to maintain connection:', error);
+                }
+            }, 60000);
+
             elizaLogger.success('✨ Telegram client successfully started!');
 
             // Log successful connection
@@ -258,12 +284,66 @@ export class TelegramUserClient {
 
     async stop(): Promise<void> {
         try {
-            elizaLogger.log('Disconnecting from Telegram...');
+            elizaLogger.log('Stopping Telegram client...');
+            await this.messageManager.stopMarketing();
             await this.client.disconnect();
-            elizaLogger.success('✅ Successfully disconnected from Telegram');
+            elizaLogger.success('✅ Telegram client stopped successfully');
         } catch (error) {
-            elizaLogger.error('Error disconnecting from Telegram:', error);
+            elizaLogger.error('Error stopping Telegram client:', error);
             throw error;
+        }
+    }
+
+    async getDialogById(chatId: string | number): Promise<Dialog | null> {
+        try {
+            // Get all dialogs (chats/channels/groups)
+            const dialogs = await this.client.getDialogs({});
+            
+            // Find the dialog with matching ID
+            const dialog = dialogs.find(d => d.id?.toString() === chatId.toString());
+            
+            if (!dialog) {
+                elizaLogger.warn(`Could not find dialog with ID: ${chatId}`);
+                return null;
+            }
+
+            return dialog;
+        } catch (error) {
+            elizaLogger.error('Error getting dialog by ID:', {
+                error: error instanceof Error ? error.message : String(error),
+                chatId
+            });
+            return null;
+        }
+    }
+
+    private async reconnectWithBackoff(attempt: number = 0): Promise<void> {
+        const maxAttempts = 10;
+        const baseDelay = 1000; // 1 second
+        const maxDelay = 30000; // 30 seconds
+
+        if (attempt >= maxAttempts) {
+            throw new Error('Max reconnection attempts reached');
+        }
+
+        const delay = Math.min(baseDelay * Math.pow(2, attempt), maxDelay);
+        elizaLogger.log(`Reconnection attempt ${attempt + 1}/${maxAttempts} after ${delay}ms delay`);
+
+        await new Promise(resolve => setTimeout(resolve, delay));
+
+        try {
+            await this.client.connect();
+            elizaLogger.success('Reconnected successfully');
+        } catch (error) {
+            elizaLogger.error('Reconnection failed:', error);
+            await this.reconnectWithBackoff(attempt + 1);
+        }
+    }
+
+    private async ensureConnection(): Promise<void> {
+        if (!this.client.connected) {
+            elizaLogger.warn('Client disconnected, attempting to reconnect...');
+            await this.reconnectWithBackoff();
         }
     }
 }

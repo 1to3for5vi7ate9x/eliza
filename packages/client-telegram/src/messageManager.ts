@@ -26,10 +26,11 @@ import {
     TIMING_CONSTANTS,
     RESPONSE_CHANCES,
 } from "./constants";
+import { TelegramClient, Dialog } from 'telegram';
 
-// Message handler template for Telegram
+// Base templates that incorporate character's style and behavior
 export const telegramMessageHandlerTemplate = `
-# Areas of Expertise
+# Character Context
 {{knowledge}}
 
 # About {{agentName}}:
@@ -37,59 +38,58 @@ export const telegramMessageHandlerTemplate = `
 {{lore}}
 {{topics}}
 
-Recent interactions:
-{{recentPostInteractions}}
+# Character Style
+{{style.all}}
+{{style.chat}}
+{{style.avoid}}
 
-# TASK: Generate a response as {{agentName}}
+# Current Conversation Context
+Previous messages:
+{{context}}
 
-Current Message:
-{{currentPost}}
-
-Previous Messages:
-{{formattedConversation}}
-
-# INSTRUCTIONS:
-1. First, understand the exact question or topic the user is asking about
-2. Provide a direct, concise answer that addresses the specific question
-3. Keep responses short and natural, like a human conversation
-4. Stay strictly on topic - only add relevant context if necessary
-5. Use a friendly but professional tone
-6. Avoid asking unnecessary questions
-7. If the question is about your knowledge in a topic, first confirm if you know it, then offer to share specific aspects
-
-Remember:
-- Keep responses under 2-3 sentences
-- Answer the question first, then add minimal context if needed
-- Stay focused on the user's specific question
-- Use natural, conversational language
-- Be direct and clear
+# Current Question/Message
+User {{username}} asks: {{currentMessage}}
 ` + messageCompletionFooter;
 
-// Should respond template for Telegram
 export const telegramShouldRespondTemplate = `
-# INSTRUCTIONS: Determine if {{agentName}} should respond to the message.
+# Character Context
+Name: {{agentName}}
+Role: {{description}}
+Topics: {{topics}}
 
-Response options are [RESPOND], [IGNORE] and [STOP].
+# Character Style
+{{style.all}}
+{{style.chat}}
+{{style.avoid}}
 
-For messages:
-- RESPOND to direct questions
-- RESPOND to messages about crypto, blockchain, AI, or technology
-- RESPOND if someone is seeking advice in your areas of expertise
-- IGNORE messages that are completely off-topic (not about tech, crypto, AI, or related fields)
-- IGNORE spam or nonsense messages
-- STOP if asked to stop or if conversation is clearly ended
+# Conversation State
+Previous messages:
+{{context}}
 
-IMPORTANT:
-- If the message is even slightly related to your expertise, choose RESPOND
-- Only IGNORE messages that are completely unrelated to your knowledge areas
-- When in doubt about relevance, choose RESPOND
-
-Recent Messages:
-{{recentPosts}}
-
-Current message for analysis:
-{{currentPost}}
+Current message from user {{username}}: {{currentMessage}}
 ` + shouldRespondFooter;
+
+// Marketing template that uses character's own marketing instructions
+export const telegramMarketingTemplate = `
+# Character Context
+{{knowledge}}
+
+# About {{agentName}}:
+{{bio}}
+{{lore}}
+{{topics}}
+
+# Character Style
+{{style.all}}
+{{style.chat}}
+{{style.avoid}}
+
+# Marketing Instructions
+{{style.marketing}}
+
+# Task
+Generate a casual message to share in the group chat.
+` + messageCompletionFooter;
 
 const MAX_MESSAGE_LENGTH = 4096; // Telegram's max message length
 
@@ -111,6 +111,7 @@ export interface Message {
 
 export class MessageManager {
     private runtime: IAgentRuntime;
+    private client: TelegramClient;
     private interestChats: {
         [key: string]: {
             lastMessageSent: number;
@@ -119,160 +120,483 @@ export class MessageManager {
         };
     } = {};
 
-    constructor(runtime: IAgentRuntime) {
+    // Marketing-related fields
+    private targetGroups: Set<string> = new Set();
+    private lastMarketingTimes: Map<string, number> = new Map();
+    private groupMessageCounts: Map<string, number> = new Map(); // Track messages since last bot message
+    private groupTimeReductions: Map<string, number> = new Map(); // Track accumulated time reductions
+    
+    // Base timing constants
+    private readonly MIN_MARKETING_INTERVAL = 15 * 60 * 1000; // 15 minutes
+    private readonly MAX_MARKETING_INTERVAL = 45 * 60 * 1000; // 45 minutes
+    private readonly BASE_WAIT_TIME = 6 * 60 * 60 * 1000; // 6 hours base wait time
+    private readonly MIN_MESSAGES_BEFORE_REPLY = 20; // Minimum messages before allowing reply
+    private readonly TIME_REDUCTION_PER_MESSAGE = 15 * 60 * 1000; // 15 minutes reduction per active period
+    private readonly MIN_WAIT_TIME = 30 * 60 * 1000; // Minimum 30 minutes between messages
+    private readonly MAX_MARKETING_MESSAGES_PER_GROUP = 96; // Max marketing messages per group per day
+    private marketingEnabled: boolean = false;
+
+    constructor(runtime: IAgentRuntime, client: TelegramClient) {
         elizaLogger.log('Initializing MessageManager');
         this.runtime = runtime;
+        this.client = client;
     }
 
-    async handleMessage(message: Message): Promise<Content | null> {
+    async startMarketing(): Promise<void> {
         try {
-            elizaLogger.log('🔄 Starting message processing:', {
-                text: message.text,
-                chatId: message.chat.id,
-                userId: message.from.id
+            // Use existing TELEGRAM_ALLOWED_GROUPS setting
+            const allowedGroupsStr = this.runtime.getSetting('TELEGRAM_ALLOWED_GROUPS');
+            if (allowedGroupsStr) {
+                // Normalize group names by removing t.me/ prefix
+                this.targetGroups = new Set(
+                    allowedGroupsStr.split(',')
+                        .map(g => g.trim())
+                        .map(g => this.normalizeGroupName(g))
+                );
+            }
+
+            // Initialize marketing for each group
+            await this.initializeGroupMarketing();
+            this.marketingEnabled = true;
+
+            elizaLogger.log('✅ Marketing functionality started successfully');
+            elizaLogger.log('📢 Marketing in groups:', Array.from(this.targetGroups));
+        } catch (error) {
+            elizaLogger.error('Failed to start marketing:', error);
+            throw error;
+        }
+    }
+
+    async stopMarketing(): Promise<void> {
+        elizaLogger.log('Stopping marketing functionality...');
+        this.marketingEnabled = false;
+        elizaLogger.success('✅ Marketing functionality stopped');
+    }
+
+    private normalizeGroupName(name: string): string {
+        // Remove t.me/ prefix if present
+        return name.replace(/^t\.me\//, '');
+    }
+
+    private async initializeGroupMarketing(): Promise<void> {
+        for (const groupName of this.targetGroups) {
+            try {
+                elizaLogger.log(`Looking for group: ${groupName}`);
+                const dialogs = await this.client.getDialogs({});
+                elizaLogger.log(`Found ${dialogs.length} dialogs`);
+                
+                const dialog = dialogs.find(d => {
+                    const title = this.normalizeGroupName(d.title || '');
+                    const name = this.normalizeGroupName(d.name || '');
+                    const matchesTitle = title === groupName;
+                    const matchesName = name === groupName;
+                    
+                    elizaLogger.log(`Checking dialog - Title: ${title}, Name: ${name}, Matches: ${matchesTitle || matchesName}`);
+                    return matchesTitle || matchesName;
+                });
+                
+                if (dialog) {
+                    elizaLogger.log(`Found group ${groupName} with ID: ${dialog.id}`);
+                    // Schedule first marketing message
+                    const delay = Math.floor(Math.random() * (this.MAX_MARKETING_INTERVAL - this.MIN_MARKETING_INTERVAL) + this.MIN_MARKETING_INTERVAL);
+                    setTimeout(() => this.sendMarketingMessage(dialog), delay);
+                    elizaLogger.log(`📅 Scheduled first marketing message for ${groupName} in ${Math.floor(delay / 1000)} seconds`);
+                } else {
+                    elizaLogger.warn(`⚠️ Could not find group: ${groupName}. Available groups:`, 
+                        dialogs.map(d => ({ title: d.title, name: d.name })));
+                }
+            } catch (error) {
+                elizaLogger.error(`Failed to initialize marketing for group ${groupName}:`, {
+                    error: error instanceof Error ? error.message : String(error),
+                    stack: error instanceof Error ? error.stack : undefined
+                });
+            }
+        }
+    }
+
+    private canSendMarketingMessage(dialog: Dialog): boolean {
+        const groupId = dialog.id.toString();
+        const now = Date.now();
+        const lastMessageTime = this.lastMarketingTimes.get(groupId) || 0;
+        const messageCount = this.groupMessageCounts.get(groupId) || 0;
+        const timeReduction = this.groupTimeReductions.get(groupId) || 0;
+
+        // Calculate required wait time with reductions
+        const requiredWaitTime = Math.max(
+            this.MIN_WAIT_TIME,
+            this.BASE_WAIT_TIME - timeReduction
+        );
+
+        // Check if enough time has passed and enough messages have been posted
+        const timeOk = (now - lastMessageTime) >= requiredWaitTime;
+        const messagesOk = messageCount >= this.MIN_MESSAGES_BEFORE_REPLY;
+
+        elizaLogger.log(`Marketing check for ${dialog.title}:`, {
+            timePassedMinutes: Math.floor((now - lastMessageTime) / (60 * 1000)),
+            requiredWaitTimeMinutes: Math.floor(requiredWaitTime / (60 * 1000)),
+            messageCount,
+            minMessages: this.MIN_MESSAGES_BEFORE_REPLY,
+            timeReductionMinutes: Math.floor(timeReduction / (60 * 1000)),
+            canSend: timeOk && messagesOk
+        });
+
+        return timeOk && messagesOk;
+    }
+
+    private updateGroupActivity(dialog: Dialog) {
+        const groupId = dialog.id.toString();
+        
+        // Increment message count
+        const currentCount = this.groupMessageCounts.get(groupId) || 0;
+        this.groupMessageCounts.set(groupId, currentCount + 1);
+
+        // If we've reached message threshold, add time reduction
+        if ((currentCount + 1) % this.MIN_MESSAGES_BEFORE_REPLY === 0) {
+            const currentReduction = this.groupTimeReductions.get(groupId) || 0;
+            const newReduction = Math.min(
+                this.BASE_WAIT_TIME - this.MIN_WAIT_TIME, // Don't reduce below minimum wait time
+                currentReduction + this.TIME_REDUCTION_PER_MESSAGE
+            );
+            this.groupTimeReductions.set(groupId, newReduction);
+            
+            elizaLogger.log(`Updated time reduction for ${dialog.title}:`, {
+                newReductionMinutes: Math.floor(newReduction / (60 * 1000)),
+                messageCount: currentCount + 1
+            });
+        }
+    }
+
+    private resetGroupCounters(dialog: Dialog) {
+        const groupId = dialog.id.toString();
+        this.groupMessageCounts.set(groupId, 0);
+        this.lastMarketingTimes.set(groupId, Date.now());
+    }
+
+    private async sendMarketingMessage(dialog: Dialog): Promise<void> {
+        try {
+            const groupId = dialog.id.toString();
+            elizaLogger.log(`Checking if we can send marketing message to ${dialog.title} (${groupId})`);
+
+            // Check if marketing is enabled
+            if (!this.marketingEnabled) {
+                elizaLogger.log(`Marketing is disabled for group: ${dialog.title}`);
+                return;
+            }
+
+            // Check if we can send a message based on time and activity
+            if (!this.canSendMarketingMessage(dialog)) {
+                elizaLogger.log(`Conditions not met for marketing message in ${dialog.title}`);
+                
+                // Schedule next check
+                const nextCheck = Math.floor(Math.random() * (this.MAX_MARKETING_INTERVAL - this.MIN_MARKETING_INTERVAL) + this.MIN_MARKETING_INTERVAL);
+                setTimeout(() => this.sendMarketingMessage(dialog), nextCheck);
+                elizaLogger.log(`📅 Scheduled next check for ${dialog.title} in ${Math.floor(nextCheck / 60000)} minutes`);
+                return;
+            }
+
+            // Check if we've exceeded max messages per day for this group
+            const messageCount = await this.getMarketingMessageCountToday(dialog);
+            elizaLogger.log(`Current message count for ${dialog.title}: ${messageCount}/${this.MAX_MARKETING_MESSAGES_PER_GROUP}`);
+            
+            if (messageCount >= this.MAX_MARKETING_MESSAGES_PER_GROUP) {
+                elizaLogger.log(`⚠️ Max marketing messages reached for group: ${dialog.title}`);
+                return;
+            }
+
+            // Generate marketing message using character profile
+            elizaLogger.log(`Generating marketing message for ${dialog.title}`);
+            
+            const memory = {
+                id: stringToUuid(`marketing-${Date.now()}`),
+                timestamp: Date.now(),
+                type: 'marketing',
+                content: {
+                    text: 'Generate a marketing message to promote our services',
+                    type: 'text'
+                },
+                metadata: {
+                    platform: 'telegram',
+                    channelId: groupId,
+                    messageType: 'marketing'
+                },
+                roomId: stringToUuid(`${groupId}-${this.runtime.agentId}`),
+                agentId: this.runtime.agentId,
+                userId: stringToUuid(this.client.session.userId?.toString() || 'system')
+            };
+
+            // Create state with character information
+            const state = {
+                character: this.runtime.character,
+                agentName: this.runtime.character?.name || 'Agent',
+                bio: this.runtime.character?.description || '',
+                style: this.runtime.character?.style || {},
+                topics: this.runtime.character?.topics || [],
+                knowledge: this.runtime.character?.knowledge || [],
+                lore: this.runtime.character?.lore || '',
+                system: this.runtime.character?.system || '',
+                prompt: {
+                    text: 'Generate an engaging marketing message that promotes our services while staying true to the character\'s style and personality.',
+                    type: 'marketing'
+                }
+            };
+
+            elizaLogger.log(`Generating response for ${dialog.title} with character:`, {
+                name: state.agentName,
+                hasStyle: !!state.style,
+                hasTopics: !!state.topics?.length,
+                hasKnowledge: !!state.knowledge?.length
             });
 
-            // Create memory for the message
-            let memory: Memory;
-            try {
-                memory = await this.createMessageMemory(message);
-                elizaLogger.log('✅ Memory created successfully:', memory);
-            } catch (error) {
-                elizaLogger.error('❌ Failed to create message memory:', error);
-                throw new Error('Memory creation failed');
-            }
-
-            // Get state with message context and chat history
-            let state: State;
-            try {
-                state = await this.runtime.composeState(memory);
-                
-                // Add recent chat history to state
-                const chatId = message.chat.id;
-                if (this.interestChats[chatId]) {
-                    const recentMessages = this.interestChats[chatId].messages
-                        .slice(-5) // Get last 5 messages
-                        .map(msg => `${msg.userName}: ${msg.content.text}`)
-                        .join('\n');
-                    state.context = `Recent chat history:\n${recentMessages}\n\nCurrent message:\n${message.from.username}: ${message.text}`;
-                } else {
-                    state.context = `Current message:\n${message.from.username}: ${message.text}`;
-                }
-                
-                elizaLogger.log('✅ State composed successfully with chat history');
-            } catch (error) {
-                elizaLogger.error('❌ Failed to compose state:', error);
-                throw new Error('State composition failed');
-            }
-
-            // Use AI to decide whether to respond
-            let shouldRespond: string;
-            try {
-                const shouldRespondContext = composeContext({
+            const response = await generateMessageResponse({
+                runtime: this.runtime,
+                context: composeContext({
                     state,
-                    template: this.runtime.character?.templates?.telegramShouldRespondTemplate || 
-                             this.runtime.character?.templates?.shouldRespondTemplate || 
-                             telegramShouldRespondTemplate
-                });
-                elizaLogger.log('📝 Response context composed:', shouldRespondContext);
-                
-                shouldRespond = await generateShouldRespond({
-                    runtime: this.runtime,
-                    context: shouldRespondContext,
-                    modelClass: ModelClass.LARGE
-                });
-                elizaLogger.log('🤔 Response decision:', shouldRespond);
-            } catch (error) {
-                elizaLogger.error('❌ Failed to determine if should respond:', error);
-                throw new Error('Response decision failed');
+                    template: telegramMarketingTemplate
+                }),
+                modelClass: ModelClass.LARGE
+            });
+
+            // Ensure response is properly formatted
+            let responseText: string;
+            if (typeof response === 'string') {
+                responseText = response;
+            } else if (typeof response === 'object' && response.text) {
+                responseText = String(response.text);
+            } else {
+                elizaLogger.warn('Invalid response format:', response);
+                return;
             }
 
-            if (shouldRespond !== 'RESPOND') {
-                elizaLogger.log('⏭️ Decided not to respond');
+            elizaLogger.log(`Generated message for ${dialog.title}, simulating typing...`);
+            // Simulate typing before sending
+            try {
+                await this.client.setTyping(dialog.id);
+                await new Promise(resolve => setTimeout(resolve, responseText.length * 100));
+                await this.client.setTyping(dialog.id, { typing: false });
+            } catch (error) {
+                elizaLogger.warn(`Failed to set typing indicator for ${dialog.title}:`, error);
+                // Continue anyway since this is not critical
+            }
+
+            elizaLogger.log(`Sending message to ${dialog.title}`);
+            await this.client.sendMessage(dialog.id, {
+                message: responseText,
+                parseMode: 'markdown'
+            });
+
+            // Create response memory
+            const responseMemory: Memory = {
+                id: stringToUuid(Date.now().toString()),
+                agentId: this.runtime.agentId,
+                userId: stringToUuid(this.client.session.userId?.toString() || 'system'),
+                roomId: stringToUuid(`${groupId}-${this.runtime.agentId}`),
+                content: {
+                    text: responseText,
+                    source: 'telegram',
+                    type: 'marketing'
+                },
+                createdAt: Date.now(),
+                embedding: getEmbeddingZeroVector(),
+            };
+
+            await this.runtime.messageManager.createMemory(responseMemory);
+
+            this.lastMarketingTimes.set(groupId, Date.now());
+            elizaLogger.success(`✅ Sent marketing message to ${dialog.title}`);
+
+            // Schedule next marketing message
+            const nextDelay = Math.floor(Math.random() * (this.MAX_MARKETING_INTERVAL - this.MIN_MARKETING_INTERVAL) + this.MIN_MARKETING_INTERVAL);
+            setTimeout(() => this.sendMarketingMessage(dialog), nextDelay);
+            elizaLogger.log(`📅 Scheduled next message for ${dialog.title} in ${Math.floor(nextDelay / 60000)} minutes`);
+        } catch (error) {
+            elizaLogger.error(`Failed to send marketing message to ${dialog.title}:`, {
+                error: error instanceof Error ? error.message : String(error),
+                stack: error instanceof Error ? error.stack : undefined,
+                dialogId: dialog.id,
+                dialogTitle: dialog.title,
+                dialogType: dialog.type,
+                runtime: {
+                    hasModelProvider: !!this.runtime?.modelProvider,
+                    hasCharacter: !!this.runtime?.character
+                }
+            });
+            
+            // Schedule retry even if failed
+            const retryDelay = Math.floor(Math.random() * (this.MAX_MARKETING_INTERVAL - this.MIN_MARKETING_INTERVAL) + this.MIN_MARKETING_INTERVAL);
+            setTimeout(() => this.sendMarketingMessage(dialog), retryDelay);
+            elizaLogger.log(`📅 Scheduled retry for ${dialog.title} in ${Math.floor(retryDelay / 60000)} minutes`);
+        }
+    }
+
+    public async handleMessage(message: Message): Promise<Content | null> {
+        try {
+            // Handle both Telegram and Discord message structures
+            const chatInfo = {
+                id: message.chat?.id || message.channelId,
+                type: message.chat?.type || 'channel',
+                title: message.chat?.title
+            };
+
+            if (!chatInfo.id) {
+                elizaLogger.warn('Invalid message format: Missing chat/channel ID');
                 return null;
             }
 
-            // Generate response using character's personality
-            let response: string;
-            try {
-                const messageContext = `
-# Current Conversation
-User ${message.from.username} asks: ${message.text}
+            elizaLogger.log('🔄 Starting message processing:', {
+                text: message.text,
+                chatId: chatInfo.id,
+                userId: message.from?.id || message.author?.id
+            });
 
-# Chat History
-${this.interestChats[message.chat.id]?.messages
-    .slice(-5)
-    .map(msg => `${msg.userName}: ${msg.content.text}`)
-    .join('\n') || 'No previous messages'}
-
-# Task
-Generate a natural, conversational response to the user's message that:
-1. Directly addresses their question about Bitcoin
-2. Shows expertise without being overly technical
-3. Maintains a friendly, helpful tone
-4. Keeps the response concise (2-3 sentences)
-
-${this.runtime.character?.templates?.telegramMessageHandlerTemplate ||
-  this.runtime.character?.templates?.messageHandlerTemplate ||
-  telegramMessageHandlerTemplate}`;
-
-                elizaLogger.log('📝 Message context composed:', messageContext);
-                
-                response = await generateMessageResponse({
-                    runtime: this.runtime,
-                    context: messageContext,
-                    modelClass: ModelClass.LARGE
-                });
-
-                // Parse JSON response if needed
-                try {
-                    const jsonResponse = JSON.parse(response);
-                    response = jsonResponse.text || response;
-                } catch (e) {
-                    // If not JSON, use response as is
-                }
-
-                elizaLogger.log('✅ Raw response generated:', response);
-
-            } catch (error) {
-                elizaLogger.error('❌ Failed to generate response:', error);
-                throw new Error('Response generation failed');
+            // Validate message
+            const userId = message.from?.id || message.author?.id;
+            if (!userId) {
+                throw new Error('Invalid message format: Missing user ID');
             }
 
-            if (!response) {
-                elizaLogger.error('❌ No response generated');
+            // Ensure message text is properly formatted
+            message.text = typeof message.text === 'object' ?
+                JSON.stringify(message.text) : String(message.text || '');
+
+            // Check if we should respond based on character's topics and rules
+            const shouldRespond = this.shouldRespondToMessage(message.text, chatInfo.id);
+            
+            if (!shouldRespond) {
+                elizaLogger.log('Decided not to respond', {
+                    reason: 'Message does not match character topics or rules',
+                    message: message.text
+                });
+                return null;
+            }
+
+            // Create memory for the message
+            let memory = await this.createMessageMemory(message);
+
+            // Compose state with chat history and character details
+            let state = await this.runtime.composeState(memory);
+            const chatId = chatInfo.id;
+
+            // Add chat history context
+            if (this.interestChats[chatId]) {
+                const recentMessages = this.interestChats[chatId].messages
+                    .slice(-5)
+                    .map(msg => `${msg.userName}: ${msg.content.text}`)
+                    .join('\n');
+                    
+                state.context = `Recent conversation:\n${recentMessages}`;
+            }
+
+            // Add character context including style and behavior
+            state.character = {
+                name: this.runtime.character.name,
+                description: this.runtime.character.description,
+                topics: this.runtime.character.topics,
+                knowledge: this.runtime.character.knowledge,
+                style: this.runtime.character.style || {},
+                system: this.runtime.character.system
+            };
+
+            // Add current message and user info
+            state.currentMessage = message.text;
+            state.username = message.from?.username || message.author?.username || 'User';
+
+            // Generate response using character's personality
+            let response = await generateMessageResponse({
+                runtime: this.runtime,
+                context: composeContext({
+                    state,
+                    template: this.runtime.character?.templates?.telegramMessageHandlerTemplate || telegramMessageHandlerTemplate
+                }),
+                modelClass: ModelClass.LARGE
+            });
+
+            elizaLogger.log('🤖 Generated response:', {
+                response,
+                character: this.runtime.character.name,
+                message: message.text
+            });
+
+            // Ensure response is properly formatted
+            let responseText: string;
+            if (typeof response === 'string') {
+                responseText = response;
+            } else if (typeof response === 'object' && response.text) {
+                responseText = String(response.text);
+            } else {
+                elizaLogger.warn('Invalid response format:', response);
                 return null;
             }
 
             // Update chat state
-            try {
-                this.updateChatState(message, response);
-                elizaLogger.log('✅ Chat state updated successfully');
-            } catch (error) {
-                elizaLogger.error('❌ Failed to update chat state:', error);
-            }
+            this.updateChatState(message, responseText);
 
-            elizaLogger.success('✨ Message handled successfully');
-            return { text: response };
+            // Create response memory with proper content structure
+            const responseMemory: Memory = {
+                id: stringToUuid(Date.now().toString()),
+                agentId: this.runtime.agentId,
+                userId: stringToUuid(message.from?.id || message.author?.id),
+                roomId: stringToUuid(message.chat?.id + "-" + this.runtime.agentId || message.channelId + "-" + this.runtime.agentId),
+                content: {
+                    text: responseText,
+                    source: 'telegram',
+                    inReplyTo: memory.id
+                },
+                createdAt: Date.now(),
+                embedding: getEmbeddingZeroVector(),
+            };
+
+            await this.runtime.messageManager.createMemory(responseMemory);
+
+            return {
+                type: 'text',
+                text: responseText,
+                content: responseText,
+                source: 'telegram',
+                inReplyTo: memory.id
+            };
+
         } catch (error) {
-            elizaLogger.error('❌ Critical error in handleMessage:', error);
+            elizaLogger.error('❌ Error handling message:', {
+                error: error instanceof Error ? error.message : 'Unknown error',
+                stack: error instanceof Error ? error.stack : undefined,
+                message: message.text,
+                userId: message.from?.id || message.author?.id,
+                chatId: message.chat?.id || message.channelId,
+                character: this.runtime.character?.name
+            });
             return null;
         }
     }
 
     private async createMessageMemory(message: Message): Promise<Memory> {
         try {
-            const userId = stringToUuid(message.from.id);
-            const roomId = stringToUuid(message.chat.id + "-" + this.runtime.agentId);
+            const userId = stringToUuid(message.from?.id || message.author?.id);
+            const roomId = stringToUuid(message.chat?.id + "-" + this.runtime.agentId || message.channelId + "-" + this.runtime.agentId);
+            const messageId = stringToUuid(Date.now().toString());
 
+            // Ensure message content is properly formatted
+            const messageText = typeof message.text === 'object' ?
+                JSON.stringify(message.text) : String(message.text || '');
+
+            // Create memory content object
             const content: Content = {
-                text: message.text,
+                text: messageText,
                 source: 'telegram',
                 inReplyTo: message.replyTo ? stringToUuid(message.replyTo.messageId) : undefined
             };
 
+            // Ensure connection exists
+            await this.runtime.ensureConnection(
+                userId,
+                roomId,
+                message.from?.username || message.author?.username || '',
+                message.from?.firstName || message.author?.firstName || '',
+                'telegram'
+            );
+
+            // Create memory object
             const memory: Memory = {
-                id: stringToUuid(Date.now().toString()),
+                id: messageId,
                 agentId: this.runtime.agentId,
                 userId,
                 roomId,
@@ -281,19 +605,26 @@ ${this.runtime.character?.templates?.telegramMessageHandlerTemplate ||
                 embedding: getEmbeddingZeroVector(),
             };
 
+            // Store memory
             await this.runtime.messageManager.createMemory(memory);
             elizaLogger.log('Memory created successfully:', { id: memory.id, userId, roomId });
             return memory;
         } catch (error) {
-            elizaLogger.error('Error creating memory:', error);
+            elizaLogger.error('Error creating memory:', {
+                error: error instanceof Error ? error.message : 'Unknown error',
+                stack: error instanceof Error ? error.stack : undefined,
+                message: message.text,
+                userId: message.from?.id || message.author?.id,
+                chatId: message.chat?.id || message.channelId
+            });
             throw error;
         }
     }
 
     private updateChatState(message: Message, response: string): void {
         try {
-            const chatId = message.chat.id;
-            
+            const chatId = message.chat?.id || message.channelId;
+
             // Initialize chat state if not exists
             if (!this.interestChats[chatId]) {
                 this.interestChats[chatId] = {
@@ -305,18 +636,28 @@ ${this.runtime.character?.templates?.telegramMessageHandlerTemplate ||
             // Update last message sent time
             this.interestChats[chatId].lastMessageSent = Date.now();
 
-            // Add message to chat history
+            // Ensure message content is properly formatted
+            const messageText = typeof message.text === 'object' ?
+                JSON.stringify(message.text) : String(message.text || '');
+
+            // Add message to chat history with proper content structure
             this.interestChats[chatId].messages.push({
-                userId: message.from.id,
-                userName: message.from.username,
-                content: { text: message.text }
+                userId: message.from?.id || message.author?.id,
+                userName: message.from?.username || message.author?.username || 'Unknown',
+                content: {
+                    text: messageText,
+                    source: 'telegram'
+                }
             });
 
-            // Add bot's response to chat history
+            // Add bot's response to chat history with proper content structure
             this.interestChats[chatId].messages.push({
                 userId: this.runtime.agentId,
-                userName: 'bot',
-                content: { text: response }
+                userName: this.runtime.character.name,
+                content: {
+                    text: String(response),
+                    source: 'telegram'
+                }
             });
 
             // Keep only last N messages
@@ -325,9 +666,17 @@ ${this.runtime.character?.templates?.telegramMessageHandlerTemplate ||
                 this.interestChats[chatId].messages = this.interestChats[chatId].messages.slice(-maxMessages);
             }
 
-            elizaLogger.log('Chat state updated for:', chatId);
+            elizaLogger.log('Chat state updated:', {
+                chatId,
+                messageCount: this.interestChats[chatId].messages.length,
+                lastMessage: response
+            });
         } catch (error) {
-            elizaLogger.error('Error updating chat state:', error);
+            elizaLogger.error('Error updating chat state:', {
+                error: error instanceof Error ? error.message : 'Unknown error',
+                stack: error instanceof Error ? error.stack : undefined,
+                chatId: message.chat?.id || message.channelId
+            });
             throw error;
         }
     }
@@ -355,6 +704,84 @@ ${this.runtime.character?.templates?.telegramMessageHandlerTemplate ||
         } catch (error) {
             elizaLogger.error('Error splitting message:', error);
             throw error;
+        }
+    }
+
+    private shouldRespondToMessage(messageText: string, chatId: string): boolean {
+        if (!this.runtime.character) {
+            return false;
+        }
+
+        const text = messageText.toLowerCase();
+        
+        // Check if message contains character's name or aliases
+        const nameMatch = text.includes(this.runtime.character.name.toLowerCase());
+        
+        // Check if message matches character's topics
+        const topicMatch = this.runtime.character.topics?.some(topic => 
+            text.includes(topic.toLowerCase())
+        );
+
+        // Get character's response rules
+        const responseRules = this.runtime.character.style?.response_rules || [];
+        
+        // Check against response patterns
+        const respondPatterns = responseRules
+            .filter(rule => rule.toLowerCase().startsWith('respond:'))
+            .map(rule => rule.toLowerCase().replace('respond:', '').trim().split(','))
+            .flat()
+            .map(pattern => pattern.trim());
+            
+        const ignorePatterns = responseRules
+            .filter(rule => rule.toLowerCase().startsWith('ignore:'))
+            .map(rule => rule.toLowerCase().replace('ignore:', '').trim().split(','))
+            .flat()
+            .map(pattern => pattern.trim());
+            
+        const shouldRespond = respondPatterns.some(pattern => text.includes(pattern));
+        const shouldIgnore = ignorePatterns.some(pattern => text.includes(pattern));
+        
+        // Calculate similarity with recent messages to avoid repetition
+        if (this.interestChats[chatId]) {
+            const recentMessages = this.interestChats[chatId].messages.slice(-5);
+            const similarMessage = recentMessages.find(msg => 
+                cosineSimilarity(msg.content.text.toLowerCase(), text) > 0.8
+            );
+            if (similarMessage) {
+                return false;
+            }
+        }
+
+        return (nameMatch || topicMatch || shouldRespond) && !shouldIgnore;
+    }
+
+    private async getMarketingMessageCountToday(dialog: Dialog): Promise<number> {
+        try {
+            elizaLogger.log(`Getting message count for ${dialog.title}`);
+            const messages = await this.client.getMessages(dialog, {
+                limit: this.MAX_MARKETING_MESSAGES_PER_GROUP,
+                fromUser: this.client.session.userId
+            });
+            elizaLogger.log(`Retrieved ${messages.length} messages for ${dialog.title}`);
+
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+
+            const todayMessages = messages.filter(msg => {
+                const msgDate = new Date(msg.date * 1000);
+                return msgDate >= today;
+            });
+
+            elizaLogger.log(`Found ${todayMessages.length} messages from today for ${dialog.title}`);
+            return todayMessages.length;
+        } catch (error) {
+            elizaLogger.error(`Failed to get message count for ${dialog.title}:`, {
+                error: error instanceof Error ? error.message : String(error),
+                stack: error instanceof Error ? error.stack : undefined,
+                dialogId: dialog.id,
+                dialogTitle: dialog.title
+            });
+            return 0;
         }
     }
 }
