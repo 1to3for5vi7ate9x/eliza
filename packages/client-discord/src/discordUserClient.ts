@@ -192,4 +192,16 @@ export class DiscordUserClient {
             await channel.sendTyping();
         }
     }
+
+    public getAllowedChannels(): Set<string> {
+        return this.allowedChannels;
+    }
+
+    public getUserId(): string | undefined {
+        return this.client.user?.id;
+    }
+
+    public getClient(): Client {
+        return this.client;
+    }
 }

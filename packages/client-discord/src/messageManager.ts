@@ -260,44 +260,89 @@ export class MessageManager {
         }
     }
 
+    async shouldRespondToMessage(messageText: string, channelId: string): Promise<boolean> {
+        try {
+            // Skip empty messages
+            if (!messageText || !this.runtime.character) {
+                return false;
+            }
+
+            const text = messageText.toLowerCase();
+            
+            // Check if message contains character's name or aliases
+            const nameMatch = text.includes(this.runtime.character.name.toLowerCase());
+            
+            // Check if message matches character's topics
+            const topicMatch = this.runtime.character.topics?.some(topic => 
+                text.includes(topic.toLowerCase())
+            );
+
+            // Get character's response rules
+            const responseRules = this.runtime.character.style?.response_rules || [];
+            
+            // Check against response patterns
+            const respondPatterns = responseRules
+                .filter(rule => rule.toLowerCase().startsWith('respond:'))
+                .map(rule => rule.toLowerCase().replace('respond:', '').trim().split(','))
+                .flat()
+                .map(pattern => pattern.trim());
+
+            // Check if message matches any response patterns
+            const patternMatch = respondPatterns.some(pattern => text.includes(pattern));
+
+            // Generate response if any condition is met
+            const shouldRespond = await generateShouldRespond({
+                runtime: this.runtime,
+                context: composeContext({
+                    state: {
+                        currentMessage: messageText,
+                        character: this.runtime.character
+                    },
+                    template: shouldRespondFooter
+                }),
+                modelClass: ModelClass.SMALL
+            });
+
+            return nameMatch || topicMatch || patternMatch || shouldRespond;
+
+        } catch (error) {
+            elizaLogger.error('Error checking if should respond:', error);
+            return false;
+        }
+    }
+
     async handleMessage(message: Message): Promise<{ text: string } | null> {
         try {
-            // Skip messages from self
-            if (message.author.id === this.client.client.user?.id) {
+            // Skip messages from the bot itself
+            const botId = this.client.getUserId();
+            if (message.author.id === botId) {
                 return null;
             }
 
-            elizaLogger.log('📨 Received message:', {
+            elizaLogger.log('🔄 Starting message processing:', {
                 text: message.content,
-                channelName: message.channel.name,
-                fromId: message.author.id,
-                timestamp: new Date().toISOString()
+                channelId: message.channel.id,
+                userId: message.author.id
             });
 
             // Check if we should respond
             const shouldRespond = await this.shouldRespondToMessage(message.content, message.channel.id);
             if (!shouldRespond) {
+                // Update channel activity for marketing even if we don't respond
+                if (message.channel instanceof TextChannel) {
+                    this.updateChannelActivity(message.channel);
+                }
                 return null;
             }
 
-            elizaLogger.log('🤔 Should respond check:', {
-                channelName: message.channel.name,
-                messageText: message.content,
-                shouldRespond: 'RESPOND'
-            });
-
             // Create memory for the message
-            const memory = await this.createMessageMemory(message);
-            elizaLogger.log('📝 Creating memory:', {
-                messageId: memory.id,
-                roomId: memory.roomId,
-                channelName: message.channel.name
-            });
+            await this.createMessageMemory(message);
 
-            // Get chat state with context
+            // Prepare chat state
             const state = await this.getChatState(message);
-            elizaLogger.log('📝 Prepared chat state:', {
-                hasContext: !!state.context,
+
+            elizaLogger.log('🧠 Preparing response with context:', {
+                messageLength: message.content.length,
                 contextLength: state.context?.length || 0,
                 characterName: this.runtime.character?.name
             });
@@ -307,6 +352,14 @@ export class MessageManager {
             if (!response) {
                 elizaLogger.warn('No response generated');
                 return null;
+            }
+
+            // Update chat state with the new message and response
+            this.updateChatState(message, response);
+
+            // If this is a marketing channel, reset marketing counters after response
+            if (message.channel instanceof TextChannel && this.marketingEnabled) {
+                this.resetChannelCounters(message.channel);
             }
 
             return { text: response };
@@ -319,6 +372,40 @@ export class MessageManager {
             });
             return null;
         }
+    }
+
+    async createMessageMemory(message: Message): Promise<Memory> {
+        // Create a unique room ID for each channel
+        const roomId = stringToUuid(`discord-${message.channel.id}-${this.runtime.agentId}`);
+
+        // Create memory
+        const memory: Memory = {
+            id: stringToUuid(message.id),
+            agentId: this.runtime.agentId,
+            userId: stringToUuid(message.author.id),
+            roomId,
+            content: {
+                text: message.content,
+                source: 'discord',
+                metadata: {
+                    channelId: message.channel.id,
+                    channelName: message.channel instanceof TextChannel ? message.channel.name : 'unknown',
+                    guildId: message.guild?.id,
+                    guildName: message.guild?.name
+                }
+            },
+            createdAt: message.createdTimestamp,
+            embedding: getEmbeddingZeroVector(),
+        };
+
+        elizaLogger.log('📝 Creating memory:', {
+            messageId: message.id,
+            roomId,
+            channelName: message.channel.name
+        });
+
+        await this.runtime.messageManager.createMemory(memory);
+        return memory;
     }
 
     private updateChatState(message: Message, response: string): void {
@@ -359,89 +446,6 @@ export class MessageManager {
         const maxMessages = 10;
         if (this.interestChannels[channelId].messages.length > maxMessages) {
             this.interestChannels[channelId].messages = this.interestChannels[channelId].messages.slice(-maxMessages);
-        }
-    }
-
-    async createMessageMemory(message: Message): Promise<Memory> {
-        // Create a unique room ID for each channel
-        const roomId = stringToUuid(`discord-${message.channel.id}-${this.runtime.agentId}`);
-
-        // Create memory
-        const memory: Memory = {
-            id: stringToUuid(message.id),
-            agentId: this.runtime.agentId,
-            userId: stringToUuid(message.author.id),
-            roomId,
-            content: {
-                text: message.content,
-                source: 'discord',
-                metadata: {
-                    channelId: message.channel.id,
-                    channelName: message.channel instanceof TextChannel ? message.channel.name : 'unknown',
-                    guildId: message.guild?.id,
-                    guildName: message.guild?.name
-                }
-            },
-            createdAt: message.createdTimestamp,
-            embedding: getEmbeddingZeroVector(),
-        };
-
-        elizaLogger.log('📝 Creating memory:', {
-            messageId: message.id,
-            roomId,
-            channelName: message.channel.name
-        });
-
-        await this.runtime.messageManager.createMemory(memory);
-        return memory;
-    }
-
-    async shouldRespondToMessage(messageText: string, channelId: string): Promise<boolean> {
-        try {
-            // Get the channel name
-            const channel = this.client.client.channels.cache.get(channelId);
-            if (!channel || !(channel instanceof TextChannel)) {
-                return false;
-            }
-
-            // Check if it's an allowed channel
-            const channelName = channel.name;
-            if (!this.client.allowedChannels.has(channelName)) {
-                return false;
-            }
-
-            // Use the runtime to determine if we should respond
-            const state = {
-                currentMessage: messageText,
-                character: {
-                    name: this.runtime.character.name,
-                    bio: Array.isArray(this.runtime.character.bio) ? this.runtime.character.bio.join('\n') : '',
-                    topics: Array.isArray(this.runtime.character.topics) ? this.runtime.character.topics.join('\n') : '',
-                    knowledge: Array.isArray(this.runtime.character.knowledge) ? this.runtime.character.knowledge.join('\n') : '',
-                    style: this.runtime.character.style || {},
-                    system: this.runtime.character.system
-                }
-            };
-
-            const shouldRespond = await generateShouldRespond({
-                runtime: this.runtime,
-                context: composeContext({
-                    state,
-                    template: this.runtime.character.templates?.shouldRespondTemplate || shouldRespondFooter
-                }),
-                modelClass: ModelClass.SMALL
-            });
-
-            elizaLogger.log('🤔 Should respond check:', {
-                channelName,
-                messageText: messageText.substring(0, 50),
-                shouldRespond
-            });
-
-            return shouldRespond;
-        } catch (error) {
-            elizaLogger.error('Error in shouldRespondToMessage:', error);
-            return false;
         }
     }
 }
