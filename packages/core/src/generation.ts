@@ -1092,12 +1092,21 @@ export async function generateMessageResponse({
 }): Promise<Content> {
     const provider = runtime.modelProvider;
     const max_context_length = models[provider].settings.maxInputTokens;
+    const MAX_RETRIES = 3;
+    const MAX_RETRY_DELAY = 8000; // 8 seconds
+    const INITIAL_RETRY_DELAY = 1000; // 1 second
 
     context = await trimTokens(context, max_context_length, runtime);
-    let retryLength = 1000; // exponential backoff
-    while (true) {
+    let retryCount = 0;
+    let retryDelay = INITIAL_RETRY_DELAY;
+
+    while (retryCount < MAX_RETRIES) {
         try {
-            elizaLogger.log("Generating message response..");
+            elizaLogger.log("Generating message response..", {
+                retryCount,
+                provider,
+                modelClass
+            });
 
             const response = await generateText({
                 runtime,
@@ -1105,22 +1114,53 @@ export async function generateMessageResponse({
                 modelClass,
             });
 
-            // try parsing the response as JSON, if null then try again
-            const parsedContent = parseJSONObjectFromText(response) as Content;
-            if (!parsedContent) {
-                elizaLogger.debug("parsedContent is null, retrying");
-                continue;
+            if (!response) {
+                throw new Error("Empty response from generateText");
             }
 
+            // try parsing the response as JSON
+            const parsedContent = parseJSONObjectFromText(response) as Content;
+            if (!parsedContent) {
+                elizaLogger.debug("Failed to parse response as JSON", {
+                    response: response.substring(0, 100) // Log first 100 chars
+                });
+                throw new Error("Failed to parse response as JSON");
+            }
+
+            if (!parsedContent.text) {
+                throw new Error("Parsed content missing text field");
+            }
+
+            elizaLogger.log("Successfully generated response", {
+                length: parsedContent.text.length,
+                preview: parsedContent.text.substring(0, 50)
+            });
+
             return parsedContent;
+
         } catch (error) {
-            elizaLogger.error("ERROR:", error);
-            // wait for 2 seconds
-            retryLength *= 2;
-            await new Promise((resolve) => setTimeout(resolve, retryLength));
-            elizaLogger.debug("Retrying...");
+            retryCount++;
+            elizaLogger.error("Error generating response:", {
+                error: error instanceof Error ? error.message : String(error),
+                retryCount,
+                maxRetries: MAX_RETRIES
+            });
+
+            if (retryCount >= MAX_RETRIES) {
+                throw new Error(`Failed to generate response after ${MAX_RETRIES} attempts: ${error instanceof Error ? error.message : String(error)}`);
+            }
+
+            // Exponential backoff with max delay
+            retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY);
+            await new Promise(resolve => setTimeout(resolve, retryDelay));
+            elizaLogger.debug("Retrying message generation", {
+                retryCount,
+                retryDelay
+            });
         }
     }
+
+    throw new Error("Failed to generate response after all retries");
 }
 
 export const generateImage = async (
