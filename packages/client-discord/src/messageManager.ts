@@ -69,6 +69,9 @@ export class MessageManager {
     private lastMarketingTimes: Map<string, number> = new Map();
     private channelMessageCounts: Map<string, number> = new Map();
     private channelTimeReductions: Map<string, number> = new Map();
+    private readonly MIN_MARKETING_INTERVAL = 15 * 60 * 1000; // 15 minutes
+    private readonly MAX_MARKETING_INTERVAL = 45 * 60 * 1000; // 45 minutes
+    private readonly MAX_MARKETING_MESSAGES_PER_CHANNEL = 96; // Max messages per channel per day
     private marketingEnabled: boolean = false;
 
     constructor(runtime: IAgentRuntime, client: DiscordUserClient) {
@@ -78,9 +81,52 @@ export class MessageManager {
     }
 
     async startMarketing(): Promise<void> {
-        elizaLogger.log('Starting Discord marketing...');
-        this.marketingEnabled = true;
-        await this.initializeChannelMarketing();
+        try {
+            elizaLogger.log('Starting Discord marketing...');
+
+            // Get allowed channels from settings
+            const allowedChannelsStr = this.runtime.getSetting('DISCORD_ALLOWED_CHANNELS');
+            if (allowedChannelsStr?.trim()) {
+                const channels = allowedChannelsStr.split(',').map(name => name.trim());
+                this.targetChannels = new Set(channels);
+                elizaLogger.log('📢 Marketing initialized for channels:', Array.from(this.targetChannels));
+            }
+
+            this.marketingEnabled = true;
+            elizaLogger.log('✅ Marketing started successfully');
+
+            // Start marketing for each target channel
+            for (const channelName of this.targetChannels) {
+                this.scheduleNextMarketingMessage(channelName);
+            }
+        } catch (error) {
+            elizaLogger.error('❌ Failed to start marketing:', error);
+            throw error;
+        }
+    }
+
+    private scheduleNextMarketingMessage(channelName: string): void {
+        if (!this.marketingEnabled) return;
+
+        const interval = Math.floor(
+            Math.random() * (this.MAX_MARKETING_INTERVAL - this.MIN_MARKETING_INTERVAL) + this.MIN_MARKETING_INTERVAL
+        );
+
+        setTimeout(async () => {
+            try {
+                if (!this.marketingEnabled) return;
+
+                const channel = await this.client.getChannelByName(channelName);
+                if (channel && channel instanceof TextChannel) {
+                    await this.sendMarketingMessage(channel);
+                }
+                this.scheduleNextMarketingMessage(channelName);
+            } catch (error) {
+                elizaLogger.error('Error in marketing message schedule:', error);
+                // Retry after a delay
+                setTimeout(() => this.scheduleNextMarketingMessage(channelName), this.MIN_MARKETING_INTERVAL);
+            }
+        }, interval);
     }
 
     async stopMarketing(): Promise<void> {
@@ -123,7 +169,7 @@ export class MessageManager {
             MARKETING_CONSTANTS.BASE_WAIT_TIME - timeReduction
         );
 
-        return timeSinceLastMessage >= waitTime && 
+        return timeSinceLastMessage >= waitTime &&
                messageCount >= MARKETING_CONSTANTS.MIN_MESSAGES_BEFORE_REPLY;
     }
 
@@ -165,7 +211,7 @@ export class MessageManager {
 
     async getChatState(message: Message): Promise<State> {
         const channelId = message.channel.id;
-        
+
         // Format character data
         const character = this.runtime.character;
         const characterData = {
@@ -280,10 +326,10 @@ export class MessageManager {
             }
 
             const text = messageText.toLowerCase();
-            
+
             // Check if message contains character's name or aliases
             const nameMatch = text.includes(this.runtime.character.name.toLowerCase());
-            
+
             // Check if message matches character's topics
             const topics = this.runtime.character.topics || [];
             const topicMatch = topics.some(topic => {
@@ -295,7 +341,7 @@ export class MessageManager {
 
             // Get character's response rules
             const responseRules = this.runtime.character.style?.response_rules || [];
-            
+
             // Check against response patterns
             const respondPatterns = responseRules
                 .filter(rule => rule.toLowerCase().startsWith('respond:'))
