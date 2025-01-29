@@ -5,14 +5,12 @@ import { NewMessage } from 'telegram/events';
 import { Dialog } from 'telegram/tl/custom/dialog';
 import input from 'input';
 import { MessageManager } from './messageManager';
-import { MarketingManager } from './marketingManager';
 import { Message } from 'telegram/tl/custom/message';
 
 export class TelegramUserClient {
     private client: TelegramClient;
     private runtime: IAgentRuntime;
     private messageManager: MessageManager;
-    private marketingManager: MarketingManager;
     private allowedGroups: Set<string>;
     private stringSession: StringSession;
     private sessionString: string = '';
@@ -34,7 +32,7 @@ export class TelegramUserClient {
 
         // Initialize allowed groups from names - empty string or undefined means no groups allowed
         this.allowedGroups = new Set(
-            allowedGroupsStr?.trim() 
+            allowedGroupsStr?.trim()
                 ? allowedGroupsStr.split(',').map(name => name.trim())
                 : []
         );
@@ -69,11 +67,11 @@ export class TelegramUserClient {
 
             // Initialize message manager with client
             this.messageManager = new MessageManager(this.runtime, this.client);
-            
+
             await this.setupMessageHandlers();
             await this.messageManager.startMarketing(); // Start marketing functionality
             this.setupShutdownHandlers();
-            
+
             // Set up connection monitoring
             setInterval(async () => {
                 try {
@@ -114,12 +112,12 @@ export class TelegramUserClient {
 
             // Save the session string
             this.sessionString = this.client.session.save() as string;
-            
+
             // Log the session string and instructions
             elizaLogger.info('🔑 Your Telegram session string has been generated.');
             elizaLogger.info('To avoid re-authentication, add this to your .env file:');
             elizaLogger.info('TELEGRAM_SESSION=' + this.sessionString);
-            
+
         } catch (error) {
             elizaLogger.error('Failed to initialize Telegram client:', error);
             throw error;
@@ -298,10 +296,10 @@ export class TelegramUserClient {
         try {
             // Get all dialogs (chats/channels/groups)
             const dialogs = await this.client.getDialogs({});
-            
+
             // Find the dialog with matching ID
             const dialog = dialogs.find(d => d.id?.toString() === chatId.toString());
-            
+
             if (!dialog) {
                 elizaLogger.warn(`Could not find dialog with ID: ${chatId}`);
                 return null;

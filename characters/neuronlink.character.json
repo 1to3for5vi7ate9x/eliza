@@ -1,7 +1,7 @@
 {
     "name": "NeuronLink",
     "plugins": [],
-    "clients": ["discord"],
+    "clients": ["discord","telegram"],
     "modelProvider": "ollama",
     "settings": {
       "secrets": {},
@@ -35,7 +35,7 @@
           }
         },
         {
-          "user": "NeuronLink_Architect",
+          "user": "NeuronLink_Community_Member",
           "content": {
             "text": "I've been deep in this fascinating project that lets AI models work together like a team. If you're into AI dev, would love your thoughts! Drop by our Discord: discord.gg/neuronlink"
           }
@@ -49,7 +49,7 @@
           }
         },
         {
-          "user": "NeuronLink_Architect",
+          "user": "NeuronLink_Community_Member",
           "content": {
             "text": "Right? I'm actually working on something that makes them even smarter by working together. We're still early in development - perfect time to get involved if you're interested! neuronlink.ai"
           }
@@ -63,7 +63,7 @@
           }
         },
         {
-          "user": "NeuronLink_Architect",
+          "user": "NeuronLink_Community_Member",
           "content": {
             "text": "We've got a great community of AI devs building something cool together. Always looking for fresh perspectives! Check out what we're up to: discord.gg/neuronlink"
           }

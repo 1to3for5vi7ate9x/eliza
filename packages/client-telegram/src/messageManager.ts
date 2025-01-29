@@ -127,12 +127,12 @@ export class MessageManager {
     private groupTimeReductions: Map<string, number> = new Map(); // Track accumulated time reductions
     
     // Base timing constants
-    private readonly MIN_MARKETING_INTERVAL = 15 * 60 * 1000; // 15 minutes
-    private readonly MAX_MARKETING_INTERVAL = 45 * 60 * 1000; // 45 minutes
-    private readonly BASE_WAIT_TIME = 6 * 60 * 60 * 1000; // 6 hours base wait time
-    private readonly MIN_MESSAGES_BEFORE_REPLY = 20; // Minimum messages before allowing reply
-    private readonly TIME_REDUCTION_PER_MESSAGE = 15 * 60 * 1000; // 15 minutes reduction per active period
-    private readonly MIN_WAIT_TIME = 30 * 60 * 1000; // Minimum 30 minutes between messages
+    private readonly MIN_MARKETING_INTERVAL = 2 * 60 * 1000;  // 2 minutes
+    private readonly MAX_MARKETING_INTERVAL = 2 * 60 * 1000;  // 2 minutes
+    private readonly BASE_WAIT_TIME = 4 * 60 * 1000;         // 4 minutes
+    private readonly MIN_MESSAGES_BEFORE_REPLY = 2;          // Reduced for testing
+    private readonly TIME_REDUCTION_PER_MESSAGE = 1 * 60 * 1000; // 1 minute
+    private readonly MIN_WAIT_TIME = 2 * 60 * 1000;         // 2 minutes
     private readonly MAX_MARKETING_MESSAGES_PER_GROUP = 96; // Max marketing messages per group per day
     private marketingEnabled: boolean = false;
 
@@ -218,29 +218,17 @@ export class MessageManager {
         const groupId = dialog.id.toString();
         const now = Date.now();
         const lastMessageTime = this.lastMarketingTimes.get(groupId) || 0;
-        const messageCount = this.groupMessageCounts.get(groupId) || 0;
-        const timeReduction = this.groupTimeReductions.get(groupId) || 0;
-
-        // Calculate required wait time with reductions
-        const requiredWaitTime = Math.max(
-            this.MIN_WAIT_TIME,
-            this.BASE_WAIT_TIME - timeReduction
-        );
-
-        // Check if enough time has passed and enough messages have been posted
-        const timeOk = (now - lastMessageTime) >= requiredWaitTime;
-        const messagesOk = messageCount >= this.MIN_MESSAGES_BEFORE_REPLY;
-
+        
+        // For testing: Only check if 2 minutes have passed since last message
+        const timeOk = (now - lastMessageTime) >= this.MIN_MARKETING_INTERVAL;
+        
         elizaLogger.log(`Marketing check for ${dialog.title}:`, {
-            timePassedMinutes: Math.floor((now - lastMessageTime) / (60 * 1000)),
-            requiredWaitTimeMinutes: Math.floor(requiredWaitTime / (60 * 1000)),
-            messageCount,
-            minMessages: this.MIN_MESSAGES_BEFORE_REPLY,
-            timeReductionMinutes: Math.floor(timeReduction / (60 * 1000)),
-            canSend: timeOk && messagesOk
+            timePassedSeconds: Math.floor((now - lastMessageTime) / 1000),
+            requiredWaitTimeSeconds: Math.floor(this.MIN_MARKETING_INTERVAL / 1000),
+            canSend: timeOk
         });
 
-        return timeOk && messagesOk;
+        return timeOk;
     }
 
     private updateGroupActivity(dialog: Dialog) {

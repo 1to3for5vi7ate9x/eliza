@@ -23,12 +23,12 @@ import { DiscordUserClient } from './discordUserClient';
 
 // Constants
 const MARKETING_CONSTANTS = {
-    MIN_MARKETING_INTERVAL: 15 * 60 * 1000, // 15 minutes
-    MAX_MARKETING_INTERVAL: 45 * 60 * 1000, // 45 minutes
-    BASE_WAIT_TIME: 6 * 60 * 60 * 1000,    // 6 hours
-    MIN_MESSAGES_BEFORE_REPLY: 20,
-    TIME_REDUCTION_PER_MESSAGE: 15 * 60 * 1000, // 15 minutes
-    MIN_WAIT_TIME: 30 * 60 * 1000,         // 30 minutes
+    MIN_MARKETING_INTERVAL: 2 * 60 * 1000,  // 2 minutes
+    MAX_MARKETING_INTERVAL: 2 * 60 * 1000,  // 2 minutes
+    BASE_WAIT_TIME: 4 * 60 * 1000,         // 4 minutes
+    MIN_MESSAGES_BEFORE_REPLY: 2,          // Reduced for testing
+    TIME_REDUCTION_PER_MESSAGE: 1 * 60 * 1000, // 1 minute
+    MIN_WAIT_TIME: 2 * 60 * 1000,         // 2 minutes
     MAX_MARKETING_MESSAGES_PER_GROUP: 96
 };
 
@@ -69,8 +69,8 @@ export class MessageManager {
     private lastMarketingTimes: Map<string, number> = new Map();
     private channelMessageCounts: Map<string, number> = new Map();
     private channelTimeReductions: Map<string, number> = new Map();
-    private readonly MIN_MARKETING_INTERVAL = 15 * 60 * 1000; // 15 minutes
-    private readonly MAX_MARKETING_INTERVAL = 45 * 60 * 1000; // 45 minutes
+    private readonly MIN_MARKETING_INTERVAL = 2 * 60 * 1000; // 2 minutes
+    private readonly MAX_MARKETING_INTERVAL = 2 * 60 * 1000; // 2 minutes
     private readonly MAX_MARKETING_MESSAGES_PER_CHANNEL = 96; // Max messages per channel per day
     private marketingEnabled: boolean = false;
 
@@ -108,23 +108,26 @@ export class MessageManager {
     private scheduleNextMarketingMessage(channelName: string): void {
         if (!this.marketingEnabled) return;
 
-        const interval = Math.floor(
-            Math.random() * (this.MAX_MARKETING_INTERVAL - this.MIN_MARKETING_INTERVAL) + this.MIN_MARKETING_INTERVAL
-        );
+        const interval = this.MIN_MARKETING_INTERVAL;  // Use fixed 2-minute interval for testing
+        elizaLogger.log(`Scheduling next marketing message for ${channelName} in ${Math.floor(interval/1000)} seconds`);
 
         setTimeout(async () => {
             try {
                 if (!this.marketingEnabled) return;
 
-                const channel = await this.client.getChannelByName(channelName);
+                const channels = await this.client.getChannels();
+                const channel = channels.find(c => c.name === channelName);
+                
                 if (channel && channel instanceof TextChannel) {
                     await this.sendMarketingMessage(channel);
                 }
+                
+                // Schedule next message immediately after sending
                 this.scheduleNextMarketingMessage(channelName);
             } catch (error) {
                 elizaLogger.error('Error in marketing message schedule:', error);
-                // Retry after a delay
-                setTimeout(() => this.scheduleNextMarketingMessage(channelName), this.MIN_MARKETING_INTERVAL);
+                // Retry after a short delay
+                setTimeout(() => this.scheduleNextMarketingMessage(channelName), 5000);
             }
         }, interval);
     }
@@ -157,56 +160,71 @@ export class MessageManager {
     }
 
     private canSendMarketingMessage(channel: TextChannel): boolean {
-        const channelName = this.normalizeChannelName(channel.name);
-        const lastMessageTime = this.lastMarketingTimes.get(channelName) || 0;
-        const messageCount = this.channelMessageCounts.get(channelName) || 0;
-        const timeReduction = this.channelTimeReductions.get(channelName) || 0;
-
+        const channelName = channel.name;
         const now = Date.now();
-        const timeSinceLastMessage = now - lastMessageTime;
-        const waitTime = Math.max(
-            MARKETING_CONSTANTS.MIN_WAIT_TIME,
-            MARKETING_CONSTANTS.BASE_WAIT_TIME - timeReduction
-        );
+        const lastMessageTime = this.lastMarketingTimes.get(channelName) || 0;
+        
+        // For testing: Only check if 2 minutes have passed since last message
+        const timeOk = (now - lastMessageTime) >= this.MIN_MARKETING_INTERVAL;
+        
+        elizaLogger.log(`Marketing check for ${channelName}:`, {
+            timePassedSeconds: Math.floor((now - lastMessageTime) / 1000),
+            requiredWaitTimeSeconds: Math.floor(this.MIN_MARKETING_INTERVAL / 1000),
+            canSend: timeOk
+        });
 
-        return timeSinceLastMessage >= waitTime &&
-               messageCount >= MARKETING_CONSTANTS.MIN_MESSAGES_BEFORE_REPLY;
-    }
-
-    private updateChannelActivity(channel: TextChannel): void {
-        const channelName = this.normalizeChannelName(channel.name);
-        const messageCount = (this.channelMessageCounts.get(channelName) || 0) + 1;
-        this.channelMessageCounts.set(channelName, messageCount);
-
-        const timeReduction = Math.min(
-            messageCount * MARKETING_CONSTANTS.TIME_REDUCTION_PER_MESSAGE,
-            MARKETING_CONSTANTS.BASE_WAIT_TIME - MARKETING_CONSTANTS.MIN_WAIT_TIME
-        );
-        this.channelTimeReductions.set(channelName, timeReduction);
-    }
-
-    private resetChannelCounters(channel: TextChannel): void {
-        const channelName = this.normalizeChannelName(channel.name);
-        this.channelMessageCounts.set(channelName, 0);
-        this.channelTimeReductions.set(channelName, 0);
-        this.lastMarketingTimes.set(channelName, Date.now());
+        return timeOk;
     }
 
     async sendMarketingMessage(channel: TextChannel): Promise<void> {
         try {
-            const response = await generateMessageResponse(this.runtime, {
-                text: '',
-                fromId: '',
-                timestamp: new Date().toISOString()
-            });
+            elizaLogger.log(`Attempting to send marketing message to ${channel.name}`);
+            
+            // Check if we can send a message
+            if (!this.canSendMarketingMessage(channel)) {
+                elizaLogger.log(`Cannot send marketing message to ${channel.name} yet`);
+                return;
+            }
 
+            // Generate marketing message using character's marketing style
+            const marketingPrompt = {
+                text: "Generate a marketing message",
+                context: {
+                    channelName: channel.name,
+                    channelTopic: channel.topic || '',
+                    marketingGoal: "Engage users and promote discussion"
+                },
+                fromId: 'marketing',
+                timestamp: new Date().toISOString()
+            };
+
+            const response = await generateMessageResponse(this.runtime, marketingPrompt);
+            
             if (response) {
-                await channel.send(response.text);
+                elizaLogger.log(`Sending marketing message to ${channel.name}: ${response}`);
+                await channel.send(response);
                 this.resetChannelCounters(channel);
+            } else {
+                elizaLogger.error('Failed to generate marketing message');
             }
         } catch (error) {
-            elizaLogger.error('Error sending marketing message:', error);
+            elizaLogger.error('Error sending marketing message:', {
+                error: error instanceof Error ? error.message : String(error),
+                stack: error instanceof Error ? error.stack : undefined,
+                channel: channel.name
+            });
         }
+    }
+
+    private updateChannelActivity(channel: TextChannel): void {
+        // Simplified version for testing
+        const channelName = channel.name;
+        this.lastMarketingTimes.set(channelName, Date.now());
+    }
+
+    private resetChannelCounters(channel: TextChannel): void {
+        const channelName = channel.name;
+        this.lastMarketingTimes.set(channelName, Date.now());
     }
 
     async getChatState(message: Message): Promise<State> {
@@ -393,57 +411,29 @@ export class MessageManager {
 
     async handleMessage(message: Message): Promise<{ text: string } | null> {
         try {
-            // Skip messages from the bot itself
-            const botId = this.client.getUserId();
-            if (message.author.id === botId) {
-                return null;
-            }
-
             elizaLogger.log('🔄 Starting message processing:', {
                 text: message.content,
                 channelId: message.channel.id,
                 userId: message.author.id
             });
 
-            // Check if we should respond
-            const shouldRespond = await this.shouldRespondToMessage(message.content, message.channel.id);
-            if (!shouldRespond) {
-                // Update channel activity for marketing even if we don't respond
-                if (message.channel instanceof TextChannel) {
-                    this.updateChannelActivity(message.channel);
-                }
-                return null;
+            // Update channel activity for marketing
+            if (message.channel instanceof TextChannel) {
+                this.updateChannelActivity(message.channel);
             }
 
-            // Create memory for the message
-            await this.createMessageMemory(message);
-
-            // Prepare chat state
+            // Get chat state
             const state = await this.getChatState(message);
-
-            elizaLogger.log('🧠 Preparing response with context:', {
-                messageLength: message.content.length,
-                contextLength: state.context?.length || 0,
-                characterName: this.runtime.character?.name
-            });
-
-            // Generate response using character's personality
+            
+            // Generate response
             const response = await this.generateResponse(message, state);
+            
             if (!response) {
-                elizaLogger.warn('No response generated');
+                elizaLogger.log('ℹ️ No response to send');
                 return null;
-            }
-
-            // Update chat state with the new message and response
-            this.updateChatState(message, response);
-
-            // If this is a marketing channel, reset marketing counters after response
-            if (message.channel instanceof TextChannel && this.marketingEnabled) {
-                this.resetChannelCounters(message.channel);
             }
 
             return { text: response };
-
         } catch (error) {
             elizaLogger.error('❌ Error handling message:', {
                 error: error instanceof Error ? error.message : String(error),
