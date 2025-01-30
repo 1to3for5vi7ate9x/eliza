@@ -1,7 +1,7 @@
 {
     "name": "NeuronLink",
     "plugins": [],
-    "clients": ["discord","telegram"],
+    "clients": ["discord"],
     "modelProvider": "ollama",
     "settings": {
       "secrets": {},

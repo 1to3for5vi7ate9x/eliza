@@ -12,21 +12,18 @@ export class DiscordUserClient {
         elizaLogger.log('📱 Constructing new DiscordUserClient...');
         this.runtime = runtime;
 
-        const allowedChannelsStr = runtime.getSetting('DISCORD_ALLOWED_CHANNELS');
         const token = runtime.getSetting('DISCORD_USER_TOKEN');
 
-        elizaLogger.log('Config:', { allowedChannels: allowedChannelsStr });
+        elizaLogger.log('Config:', { token });
 
         if (!token) {
             throw new Error('DISCORD_USER_TOKEN must be set in environment');
         }
 
-        // Initialize allowed channels from names - empty string or undefined means no channels allowed
-        this.allowedChannels = new Set(
-            allowedChannelsStr?.trim() 
-                ? allowedChannelsStr.split(',').map(name => name.trim())
-                : []
-        );
+        this.allowedChannels = new Set();
+
+        this.initializeAllowedChannels();
+
         elizaLogger.log('Initialized allowed channels:', Array.from(this.allowedChannels));
         if (this.allowedChannels.size === 0) {
             elizaLogger.warn('⚠️ No allowed channels specified - bot will not respond to any messages');
@@ -65,20 +62,75 @@ export class DiscordUserClient {
         elizaLogger.log('✅ DiscordUserClient constructor completed');
     }
 
+    private initializeAllowedChannels(): void {
+        const allowedChannelsStr = this.runtime.getSetting('DISCORD_ALLOWED_CHANNELS');
+        if (allowedChannelsStr) {
+            this.allowedChannels = new Set(
+                allowedChannelsStr.split(',')
+                    .map(c => c.trim().toLowerCase())
+                    .filter(c => c) // Remove empty strings
+            );
+            elizaLogger.log('Initialized allowed channels:', Array.from(this.allowedChannels));
+        } else {
+            elizaLogger.warn('No allowed channels specified in DISCORD_ALLOWED_CHANNELS');
+        }
+    }
+
     async start(): Promise<void> {
         try {
             elizaLogger.log('Starting Discord client...');
-            
+
             // Set up event handlers before login
             this.setupEventHandlers();
-            
+
             // Get token without quotes if present
             const token = this.runtime.getSetting('DISCORD_USER_TOKEN')?.replace(/['"]/g, '');
             elizaLogger.log('Attempting to login...');
-            
+
+            // Add ready event handler
+            this.client.on('ready', async () => {
+                elizaLogger.log('Discord client ready!', {
+                    username: this.client.user?.username,
+                    id: this.client.user?.id,
+                    isBot: this.client.user?.bot,
+                    isConnected: this.client.isReady()
+                });
+
+                // Log all available channels
+                const channels = await this.getChannels();
+                elizaLogger.log('Available channels:', channels.map(c => ({
+                    name: c.name,
+                    id: c.id,
+                    type: c.type,
+                    permissions: {
+                        sendMessages: c.permissionsFor(this.client.user!)?.has('SEND_MESSAGES'),
+                        viewChannel: c.permissionsFor(this.client.user!)?.has('VIEW_CHANNEL')
+                    }
+                })));
+
+                // Start marketing after client is ready
+                try {
+                    elizaLogger.log('Starting marketing functionality...');
+                    await this.messageManager.startMarketing();
+                    elizaLogger.log('Marketing functionality initialized');
+                } catch (error) {
+                    elizaLogger.error('Failed to start marketing:', error);
+                }
+            });
+
+            // Add error event handler
+            this.client.on('error', (error) => {
+                elizaLogger.error('Discord client error:', error);
+            });
+
+            // Add debug event handler
+            this.client.on('debug', (message) => {
+                elizaLogger.log('Discord debug:', message);
+            });
+
             // Login to Discord
             await this.client.login(token);
-            
+
         } catch (error) {
             elizaLogger.error('Failed to start Discord client:', error);
             throw error;
@@ -108,25 +160,13 @@ export class DiscordUserClient {
     }
 
     private setupEventHandlers(): void {
-        // Ready event
-        this.client.on('ready', async () => {
-            elizaLogger.success(`✅ Successfully logged in as ${this.client.user?.username}`);
-            
-            // Start marketing after successful login
-            try {
-                await this.messageManager.startMarketing();
-            } catch (error) {
-                elizaLogger.error('Failed to start marketing:', error);
-            }
-        });
-
         // Message event
         this.client.on('messageCreate', async (message) => {
             if (message.author.id === this.client.user?.id) return; // Ignore own messages
             if (!message.content) return; // Ignore messages without content
 
             const channelName = message.channel instanceof TextChannel ? message.channel.name : 'unknown';
-            const isAllowed = this.allowedChannels.has(channelName);
+            const isAllowed = this.allowedChannels.has(channelName.toLowerCase());
 
             elizaLogger.log(`Channel check - Name: ${channelName}, Allowed: ${isAllowed}`);
 
@@ -179,7 +219,33 @@ export class DiscordUserClient {
             throw new Error(`Could not find channel with ID: ${channelId}`);
         }
 
-        await channel.send(options.message);
+        elizaLogger.log('Attempting to send message:', {
+            channelName: channel.name,
+            channelId: channel.id,
+            messageLength: options.message.length,
+            isClientReady: this.client.isReady(),
+            permissions: {
+                sendMessages: channel.permissionsFor(this.client.user!)?.has('SEND_MESSAGES'),
+                viewChannel: channel.permissionsFor(this.client.user!)?.has('VIEW_CHANNEL')
+            }
+        });
+
+        try {
+            const sent = await channel.send(options.message);
+            elizaLogger.log('Message sent successfully:', {
+                messageId: sent.id,
+                channelName: channel.name,
+                timestamp: sent.createdTimestamp
+            });
+        } catch (error) {
+            elizaLogger.error('Failed to send message:', {
+                error: error instanceof Error ? error.message : String(error),
+                channelId,
+                channelName: channel.name,
+                stack: error instanceof Error ? error.stack : undefined
+            });
+            throw error;
+        }
     }
 
     async setTyping(channelId: string, options: { typing?: boolean } = {}): Promise<void> {
