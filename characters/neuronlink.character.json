@@ -1,7 +1,7 @@
 {
     "name": "NeuronLink",
     "plugins": [],
-    "clients": ["discord"],
+    "clients": ["discord","telegram"],
     "modelProvider": "ollama",
     "settings": {
       "secrets": {},
@@ -23,7 +23,7 @@
     "knowledge": [
       "Twitter: https://x.com/NeuronLinkAI",
       "Discord: https://discord.gg/neuronlink",
-      "Telegram: https://t.me/NeuronLinkAI",
+      "Telegram: https://t.me/Neuron_Link",
       "Website: https://neuronlink.ai"
     ],
     "messageExamples": [

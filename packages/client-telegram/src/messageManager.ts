@@ -127,13 +127,13 @@ export class MessageManager {
     private groupTimeReductions: Map<string, number> = new Map(); // Track accumulated time reductions
     
     // Base timing constants
-    private readonly MIN_MARKETING_INTERVAL = 2 * 60 * 1000;  // 2 minutes
-    private readonly MAX_MARKETING_INTERVAL = 2 * 60 * 1000;  // 2 minutes
-    private readonly BASE_WAIT_TIME = 4 * 60 * 1000;         // 4 minutes
-    private readonly MIN_MESSAGES_BEFORE_REPLY = 2;          // Reduced for testing
-    private readonly TIME_REDUCTION_PER_MESSAGE = 1 * 60 * 1000; // 1 minute
-    private readonly MIN_WAIT_TIME = 2 * 60 * 1000;         // 2 minutes
-    private readonly MAX_MARKETING_MESSAGES_PER_GROUP = 96; // Max marketing messages per group per day
+    private readonly MIN_MARKETING_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
+    private readonly MAX_MARKETING_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
+    private readonly BASE_WAIT_TIME = 6 * 60 * 60 * 1000;        // 6 hours
+    private readonly MIN_MESSAGES_BEFORE_REPLY = 2;
+    private readonly TIME_REDUCTION_PER_MESSAGE = 30 * 60 * 1000; // 30 minutes
+    private readonly MIN_WAIT_TIME = 4 * 60 * 60 * 1000;         // 4 hours
+    private readonly MAX_MARKETING_MESSAGES_PER_GROUP = 4;        // 4 messages per day max (24/6)
     private marketingEnabled: boolean = false;
 
     constructor(runtime: IAgentRuntime, client: TelegramClient) {

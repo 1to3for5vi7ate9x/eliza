@@ -23,13 +23,13 @@ import { DiscordUserClient } from './discordUserClient';
 
 // Constants
 const MARKETING_CONSTANTS = {
-    MIN_MARKETING_INTERVAL: 2 * 60 * 1000,  // 2 minutes
-    MAX_MARKETING_INTERVAL: 2 * 60 * 1000,  // 2 minutes
-    BASE_WAIT_TIME: 4 * 60 * 1000,         // 4 minutes
-    MIN_MESSAGES_BEFORE_REPLY: 2,          // Reduced for testing
-    TIME_REDUCTION_PER_MESSAGE: 1 * 60 * 1000, // 1 minute
-    MIN_WAIT_TIME: 2 * 60 * 1000,         // 2 minutes
-    MAX_MARKETING_MESSAGES_PER_GROUP: 96
+    MIN_MARKETING_INTERVAL: 6 * 60 * 60 * 1000,  // 6 hours
+    MAX_MARKETING_INTERVAL: 6 * 60 * 60 * 1000,  // 6 hours
+    BASE_WAIT_TIME: 6 * 60 * 60 * 1000,         // 6 hours
+    MIN_MESSAGES_BEFORE_REPLY: 2,
+    TIME_REDUCTION_PER_MESSAGE: 30 * 60 * 1000,  // 30 minutes
+    MIN_WAIT_TIME: 4 * 60 * 60 * 1000,          // 4 hours
+    MAX_MARKETING_MESSAGES_PER_GROUP: 4          // 4 messages per day max (24/6)
 };
 
 // Base templates that incorporate character's style and behavior
@@ -90,9 +90,9 @@ export class MessageManager {
     private lastMarketingTimes: Map<string, number> = new Map();
     private channelMessageCounts: Map<string, number> = new Map();
     private channelTimeReductions: Map<string, number> = new Map();
-    private readonly MIN_MARKETING_INTERVAL = 2 * 60 * 1000; // 2 minutes
-    private readonly MAX_MARKETING_INTERVAL = 2 * 60 * 1000; // 2 minutes
-    private readonly MAX_MARKETING_MESSAGES_PER_CHANNEL = 96; // Max messages per channel per day
+    private readonly MIN_MARKETING_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
+    private readonly MAX_MARKETING_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
+    private readonly MAX_MARKETING_MESSAGES_PER_CHANNEL = 4; // Max messages per channel per day
     private marketingEnabled: boolean = false;
 
     constructor(runtime: IAgentRuntime, client: DiscordUserClient) {
@@ -579,7 +579,7 @@ export class MessageManager {
     private scheduleNextMarketingMessage(channelName: string): void {
         if (!this.marketingEnabled) return;
 
-        const interval = this.MIN_MARKETING_INTERVAL;  // Use fixed 2-minute interval for testing
+        const interval = this.MIN_MARKETING_INTERVAL;  // Use fixed 6-hour interval
         elizaLogger.log(`Scheduling next marketing message for ${channelName} in ${Math.floor(interval/1000)} seconds`);
 
         setTimeout(async () => {
