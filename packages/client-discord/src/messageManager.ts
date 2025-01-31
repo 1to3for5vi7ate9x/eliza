@@ -18,18 +18,15 @@ import {
     Media
 } from '@elizaos/core';
 import { v4 as uuidv4 } from 'uuid';
-import { Message, TextChannel } from 'discord.js-selfbot-v13';
+import { Message, TextChannel, TextBasedChannel } from 'discord.js-selfbot-v13';
 import { DiscordUserClient } from './discordUserClient';
 
-// Constants
+// Constants for marketing timing and activity tracking
 const MARKETING_CONSTANTS = {
-    MIN_MARKETING_INTERVAL: 6 * 60 * 60 * 1000,  // 6 hours
-    MAX_MARKETING_INTERVAL: 6 * 60 * 60 * 1000,  // 6 hours
-    BASE_WAIT_TIME: 6 * 60 * 60 * 1000,         // 6 hours
-    MIN_MESSAGES_BEFORE_REPLY: 2,
-    TIME_REDUCTION_PER_MESSAGE: 30 * 60 * 1000,  // 30 minutes
-    MIN_WAIT_TIME: 4 * 60 * 60 * 1000,          // 4 hours
-    MAX_MARKETING_MESSAGES_PER_GROUP: 4          // 4 messages per day max (24/6)
+    MIN_MARKETING_INTERVAL: 2 * 60 * 1000,    // 2 minutes for testing (normally 6 hours)
+    REQUIRED_MESSAGES: 3,                     // Number of messages needed to consider group active
+    MESSAGE_ACTIVITY_WINDOW: 5 * 60 * 1000,   // 5 minute window to count messages
+    MAX_MESSAGES_PER_DAY: 50                  // Maximum marketing messages per day
 };
 
 // Base templates that incorporate character's style and behavior
@@ -90,9 +87,12 @@ export class MessageManager {
     private lastMarketingTimes: Map<string, number> = new Map();
     private channelMessageCounts: Map<string, number> = new Map();
     private channelTimeReductions: Map<string, number> = new Map();
-    private readonly MIN_MARKETING_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
-    private readonly MAX_MARKETING_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
-    private readonly MAX_MARKETING_MESSAGES_PER_CHANNEL = 4; // Max messages per channel per day
+    private groupActivities: Map<string, {
+        lastMarketingTime: number;
+        recentMessages: { isUser: boolean; time: number }[];
+        dailyMarketingCount: number;
+        lastDailyReset: number;
+    }> = new Map();
     private marketingEnabled: boolean = false;
 
     constructor(runtime: IAgentRuntime, client: DiscordUserClient) {
@@ -103,78 +103,47 @@ export class MessageManager {
 
     async startMarketing(): Promise<void> {
         try {
-            elizaLogger.log('🚀 Starting marketing initialization...');
+            elizaLogger.log('Starting marketing functionality...');
 
-            // Use existing DISCORD_ALLOWED_CHANNELS setting
-            const allowedChannelsStr = this.runtime.getSetting('DISCORD_ALLOWED_CHANNELS');
-            if (!allowedChannelsStr) {
-                elizaLogger.warn('No marketing channels specified in DISCORD_ALLOWED_CHANNELS');
-                return;
-            }
-
-            // Initialize target channels
-            this.targetChannels = new Set(
-                allowedChannelsStr.split(',')
-                    .map(c => c.trim().toLowerCase())
-                    .filter(c => c)
-            );
-            elizaLogger.log('Marketing channels initialized:', Array.from(this.targetChannels));
-
-            // Enable marketing before initialization
-            this.marketingEnabled = true;
-
-            // Initialize marketing for each channel
-            elizaLogger.log('Starting channel marketing initialization...');
-            await this.initializeChannelMarketing();
-
-            elizaLogger.log('✅ Marketing functionality started successfully');
-        } catch (error) {
-            elizaLogger.error('Failed to start marketing:', error);
-            throw error;
-        }
-    }
-
-    private async initializeChannelMarketing(): Promise<void> {
-        try {
+            // Initialize activity tracking for all channels
             const channels = await this.client.getChannels();
-            elizaLogger.log(`Found ${channels.length} total channels`);
-
-            for (const channelName of this.targetChannels) {
-                try {
-                    elizaLogger.log(`Looking for marketing channel: ${channelName}`);
-                    const channel = channels.find(c => c.name.toLowerCase() === channelName.toLowerCase());
-
-                    if (channel && channel instanceof TextChannel) {
-                        elizaLogger.log(`Found marketing channel ${channelName} with ID: ${channel.id}`);
-
-                        // Initialize channel state
-                        this.lastMarketingTimes.set(channel.name, 0);
-                        this.channelMessageCounts.set(channel.name, 0);
-                        this.channelTimeReductions.set(channel.name, 0);
-
-                        // Schedule first marketing message with a random delay between MIN and MAX interval
-                        const delay = this.MIN_MARKETING_INTERVAL;
-                        elizaLogger.log(`⏰ Scheduling first marketing message for ${channelName} in ${delay/1000} seconds`);
-
-                        setTimeout(() => {
-                            if (this.marketingEnabled) {
-                                elizaLogger.log(`⏰ Initial timer triggered for ${channelName}`);
-                                this.sendMarketingMessage(channel).catch(error => {
-                                    elizaLogger.error(`Error in initial marketing message for ${channelName}:`, error);
-                                });
-                            }
-                        }, delay);
-
-                        elizaLogger.log(`✅ Initialized marketing for ${channelName}`);
-                    } else {
-                        elizaLogger.warn(`⚠️ Could not find marketing channel: ${channelName}`);
-                    }
-                } catch (error) {
-                    elizaLogger.error(`Failed to initialize marketing for channel ${channelName}:`, error);
+            for (const channel of channels) {
+                const channelName = channel.name.toLowerCase();
+                if (!this.groupActivities.has(channelName)) {
+                    this.groupActivities.set(channelName, {
+                        lastMarketingTime: 0,  // Set to 0 to allow immediate first message
+                        recentMessages: [],
+                        dailyMarketingCount: 0,
+                        lastDailyReset: Date.now()
+                    });
                 }
             }
+
+            // Enable marketing
+            this.marketingEnabled = true;
+            elizaLogger.log('Marketing enabled for channels:', channels.map(c => c.name));
+
+            // Start initial timers for each channel
+            for (const channel of channels) {
+                const channelName = channel.name.toLowerCase();
+                if (this.client.getAllowedChannels().has(channelName)) {
+                    elizaLogger.log(`Setting up initial timer for ${channelName}`);
+                    // Random delay between 1-2 minutes for initial messages
+                    const initialDelay = Math.floor(Math.random() * 60 * 1000) + 60 * 1000;
+                    setTimeout(() => {
+                        if (this.marketingEnabled) {
+                            elizaLogger.log(`Initial timer triggered for ${channelName}`);
+                            this.sendMarketingMessage(channelName).catch(error => {
+                                elizaLogger.error(`Error in initial marketing message for ${channelName}:`, error);
+                            });
+                        }
+                    }, initialDelay);
+                }
+            }
+
+            elizaLogger.log('Marketing functionality started successfully');
         } catch (error) {
-            elizaLogger.error('Error in initializeChannelMarketing:', error);
+            elizaLogger.error('Error starting marketing:', error);
             throw error;
         }
     }
@@ -184,80 +153,82 @@ export class MessageManager {
         this.marketingEnabled = false;
     }
 
-    async sendMarketingMessage(channel: TextChannel): Promise<void> {
+    async sendMarketingMessage(channelName: string): Promise<void> {
         try {
-            const channelName = channel.name;
             elizaLogger.log(`Checking if we can send marketing message to ${channelName}`);
 
-            // Verify channel exists and is accessible
-            const allChannels = await this.client.getChannels();
-            const verifiedChannel = allChannels.find(c => c.id === channel.id);
-            if (!verifiedChannel) {
-                elizaLogger.error(`Channel ${channelName} not found or inaccessible`);
-                return;
-            }
-
-            // Check if marketing is enabled
             if (!this.marketingEnabled) {
                 elizaLogger.log(`Marketing is disabled for channel: ${channelName}`);
                 return;
             }
 
-            // Check if we can send a message based on time
-            const now = Date.now();
-            const lastMessageTime = this.lastMarketingTimes.get(channelName) || 0;
-            const timeOk = (now - lastMessageTime) >= this.MIN_MARKETING_INTERVAL;
-
-            elizaLogger.log(`Marketing time check for ${channelName}:`, {
-                lastMessageTime,
-                timeSinceLastMessage: Math.floor((now - lastMessageTime) / 1000),
-                requiredInterval: Math.floor(this.MIN_MARKETING_INTERVAL / 1000),
-                canSend: timeOk,
-                channelId: channel.id,
-                isText: channel instanceof TextChannel,
-                permissions: {
-                    sendMessages: channel.permissionsFor(this.client.getClient().user!)?.has('SEND_MESSAGES'),
-                    viewChannel: channel.permissionsFor(this.client.getClient().user!)?.has('VIEW_CHANNEL')
-                }
-            });
-
-            if (!timeOk) {
-                elizaLogger.log(`Time conditions not met for marketing message in ${channelName}`);
+            // Get channel and verify it exists
+            elizaLogger.log(`Fetching channel: ${channelName}`);
+            const channels = await this.client.getChannels();
+            const channel = channels.find(ch => ch.name.toLowerCase() === channelName.toLowerCase());
+            
+            if (!channel) {
+                elizaLogger.error(`Channel ${channelName} not found`);
                 return;
             }
 
-            // Generate marketing message using character profile
-            elizaLogger.log(`Generating marketing message for ${channelName}`);
-            const message = await this.generateMarketingMessage(channel);
+            // Check if we can send a marketing message
+            elizaLogger.log('Checking marketing conditions...');
+            const canSend = await this.canSendMarketingMessage(channelName, channel);
+            if (!canSend) {
+                elizaLogger.log(`Cannot send marketing message to ${channelName}`);
+                return;
+            }
 
-            if (message) {
-                elizaLogger.log(`📨 Sending marketing message to ${channelName}: ${message}`);
+            // Generate and send message
+            elizaLogger.log('Generating marketing message...');
+            const message = await this.generateMarketingMessage();
+            if (!message) {
+                elizaLogger.warn('Failed to generate marketing message');
+                return;
+            }
 
-                // Send message using the client's sendMessage method
+            try {
+                // Simulate typing for more natural behavior
+                elizaLogger.log('Sending typing indicator...');
+                await this.client.setTyping(channel.id);
+                await new Promise(resolve => setTimeout(resolve, message.length * 50));
+                
+                // Send the message
+                elizaLogger.log('Sending message...');
                 await this.client.sendMessage(channel.id, { message });
-                elizaLogger.log(`✅ Successfully sent marketing message to ${channelName}`);
-                this.lastMarketingTimes.set(channelName, Date.now());
+                
+                // Update activity tracking
+                elizaLogger.log('Updating activity tracking...');
+                const activity = this.groupActivities.get(channelName);
+                if (activity) {
+                    activity.lastMarketingTime = Date.now();
+                    activity.recentMessages.push({ time: Date.now(), isUser: false });
+                    activity.dailyMarketingCount++;
+                    elizaLogger.log(`Updated marketing count for ${channelName}: ${activity.dailyMarketingCount}`);
+                } else {
+                    elizaLogger.warn(`No activity tracking found for ${channelName}`);
+                }
+                
+                elizaLogger.log(`Sent marketing message to ${channelName}`);
 
-                // Schedule next marketing message
-                const nextInterval = this.MIN_MARKETING_INTERVAL;
-                elizaLogger.log(`⏰ Scheduling next marketing message for ${channelName} in ${nextInterval/1000} seconds`);
-
-                setTimeout(() => {
-                    if (this.marketingEnabled) {
-                        elizaLogger.log(`⏰ Timer triggered for ${channelName}`);
-                        this.sendMarketingMessage(channel).catch(error => {
-                            elizaLogger.error(`Error in scheduled marketing message for ${channelName}:`, error);
-                        });
-                    }
-                }, nextInterval);
-            } else {
-                elizaLogger.warn(`Failed to generate marketing message for ${channelName}`);
+                // Schedule next check
+                const nextCheck = MARKETING_CONSTANTS.MIN_MARKETING_INTERVAL;
+                setTimeout(() => this.sendMarketingMessage(channelName), nextCheck);
+                elizaLogger.log(`Scheduled next check for ${channelName} in ${Math.floor(nextCheck/60000)} minutes`);
+            } catch (sendError) {
+                elizaLogger.error('Error in message sending flow:', {
+                    error: sendError instanceof Error ? sendError.message : String(sendError),
+                    stack: sendError instanceof Error ? sendError.stack : undefined,
+                    channelName,
+                    messageLength: message.length
+                });
             }
         } catch (error) {
             elizaLogger.error('Error in marketing message flow:', {
                 error: error instanceof Error ? error.message : String(error),
-                channel: channel.name,
-                channelId: channel.id
+                stack: error instanceof Error ? error.stack : undefined,
+                channelName
             });
         }
     }
@@ -299,7 +270,7 @@ export class MessageManager {
             style: characterData.style
         };
 
-        elizaLogger.log('📝 Prepared chat state:', {
+        elizaLogger.log('Prepared chat state:', {
             hasContext: !!state.context,
             contextLength: state.context?.length || 0,
             characterName: state.character?.name,
@@ -311,7 +282,7 @@ export class MessageManager {
 
     async generateResponse(message: Message, state: State): Promise<string | null> {
         try {
-            elizaLogger.log('🔄 Generating response with context:', {
+            elizaLogger.log('Generating response with context:', {
                 messageLength: message.content.length,
                 contextLength: state.context?.length || 0,
                 characterName: this.runtime.character?.name
@@ -339,7 +310,7 @@ export class MessageManager {
                 return null;
             }
 
-            elizaLogger.log('🤖 Generated response:', {
+            elizaLogger.log('Generated response:', {
                 responseLength: responseText.length,
                 character: this.runtime.character?.name,
                 message: message.content
@@ -351,7 +322,7 @@ export class MessageManager {
             return responseText;
 
         } catch (error) {
-            elizaLogger.error('❌ Error generating response:', {
+            elizaLogger.error('Error generating response:', {
                 error: error instanceof Error ? error.message : String(error),
                 message: message.content
             });
@@ -427,7 +398,7 @@ export class MessageManager {
                 modelClass: ModelClass.SMALL
             });
 
-            elizaLogger.log('🤔 Should respond check:', {
+            elizaLogger.log('Should respond check:', {
                 channelName,
                 messageText: messageText.substring(0, 50),
                 nameMatch,
@@ -452,7 +423,7 @@ export class MessageManager {
                 return null;
             }
 
-            elizaLogger.log('🔄 Starting message processing:', {
+            elizaLogger.log('Starting message processing:', {
                 text: message.content,
                 channelId: message.channel.id,
                 userId: message.author.id
@@ -475,13 +446,13 @@ export class MessageManager {
             const response = await this.generateResponse(message, state);
 
             if (!response) {
-                elizaLogger.log('ℹ️ No response to send');
+                elizaLogger.log('No response to send');
                 return null;
             }
 
             return { text: response };
         } catch (error) {
-            elizaLogger.error('❌ Error handling message:', {
+            elizaLogger.error('Error handling message:', {
                 error: error instanceof Error ? error.message : String(error),
                 message: message.content,
                 channelId: message.channel.id
@@ -514,7 +485,7 @@ export class MessageManager {
             embedding: getEmbeddingZeroVector(),
         };
 
-        elizaLogger.log('📝 Creating memory:', {
+        elizaLogger.log('Creating memory:', {
             messageId: message.id,
             roomId,
             channelName: message.channel.name
@@ -566,9 +537,11 @@ export class MessageManager {
     }
 
     private updateChannelActivity(channel: TextChannel): void {
-        // Simplified version for testing
         const channelName = channel.name;
-        this.lastMarketingTimes.set(channelName, Date.now());
+        const activity = this.groupActivities.get(channelName);
+        if (activity) {
+            activity.recentMessages.push({ isUser: true, time: Date.now() });
+        }
     }
 
     private resetChannelCounters(channel: TextChannel): void {
@@ -576,57 +549,127 @@ export class MessageManager {
         this.lastMarketingTimes.set(channelName, Date.now());
     }
 
-    private scheduleNextMarketingMessage(channelName: string): void {
-        if (!this.marketingEnabled) return;
+    private isGroupActive(channelId: string): boolean {
+        const activity = this.groupActivities.get(channelId);
+        if (!activity) return false;
 
-        const interval = this.MIN_MARKETING_INTERVAL;  // Use fixed 6-hour interval
-        elizaLogger.log(`Scheduling next marketing message for ${channelName} in ${Math.floor(interval/1000)} seconds`);
+        const now = Date.now();
+        // Only count messages within activity window
+        const recentUserMessages = activity.recentMessages.filter(msg => 
+            msg.isUser && (now - msg.time) < MARKETING_CONSTANTS.MESSAGE_ACTIVITY_WINDOW
+        );
 
-        setTimeout(async () => {
-            try {
-                if (!this.marketingEnabled) return;
-
-                const channels = await this.client.getChannels();
-                const channel = channels.find(c => c.name.toLowerCase() === channelName.toLowerCase());
-
-                if (channel && channel instanceof TextChannel) {
-                    await this.sendMarketingMessage(channel);
-                } else {
-                    elizaLogger.error(`Could not find channel ${channelName} for marketing message`);
-                    // Try to reschedule if channel not found
-                    setTimeout(() => this.scheduleNextMarketingMessage(channelName), 5000);
-                }
-            } catch (error) {
-                elizaLogger.error('Error in marketing message schedule:', error);
-                // Retry after a short delay
-                setTimeout(() => this.scheduleNextMarketingMessage(channelName), 5000);
-            }
-        }, interval);
+        return recentUserMessages.length >= MARKETING_CONSTANTS.REQUIRED_MESSAGES;
     }
 
-    async generateMarketingMessage(channel: TextChannel): Promise<string | null> {
+    private async canSendMarketingMessage(channelName: string, channel: TextChannel): Promise<boolean> {
         try {
-            elizaLogger.log('Attempting to generate marketing message with:', {
-                template: discordMarketingTemplate,
-                character: this.runtime.character?.name,
-                hasStyle: !!this.runtime.character?.style,
-                hasTopics: !!this.runtime.character?.topics,
-                hasKnowledge: !!this.runtime.character?.knowledge
+            const activity = this.groupActivities.get(channelName);
+            if (!activity) {
+                elizaLogger.log(`No activity tracking for ${channelName}`);
+                return false;
+            }
+
+            const now = Date.now();
+            
+            // Reset daily count if it's a new day (24 hours since last reset)
+            if (now - activity.lastDailyReset >= 24 * 60 * 60 * 1000) {
+                activity.dailyMarketingCount = 0;
+                activity.lastDailyReset = now;
+                elizaLogger.log(`Reset daily marketing count for ${channelName}`);
+            }
+
+            const timeSinceLastMarketing = now - activity.lastMarketingTime;
+            const minTimeElapsed = timeSinceLastMarketing >= MARKETING_CONSTANTS.MIN_MARKETING_INTERVAL;
+
+            // Check if the last message was from us
+            const lastMessage = (await channel.messages.fetch({ limit: 1 })).first();
+            const lastMessageWasMarketing = lastMessage?.author.id === this.client.getUserId();
+
+            // Get user messages since marketing
+            const userMessagesSinceMarketing = activity.recentMessages.filter(msg => 
+                msg.isUser && msg.time > activity.lastMarketingTime
+            ).length;
+
+            const isActive = this.isGroupActive(channelName);
+
+            // Log all conditions
+            elizaLogger.log(`Marketing check details for ${channelName}:`, {
+                timeSinceLastMarketing: Math.floor(timeSinceLastMarketing / (60 * 1000)),
+                dailyMarketingCount: activity.dailyMarketingCount,
+                lastMessageWasMarketing,
+                userMessagesSinceMarketing,
+                isActive,
+                minTimeElapsed,
+                marketingInterval: Math.floor(MARKETING_CONSTANTS.MIN_MARKETING_INTERVAL / (60 * 1000)),
+                maxMessagesPerDay: MARKETING_CONSTANTS.MAX_MESSAGES_PER_DAY,
+                requiredMessages: MARKETING_CONSTANTS.REQUIRED_MESSAGES,
+                userId: this.client.getUserId(),
+                lastMessageAuthorId: lastMessage?.author.id,
+                lastMessageTimestamp: lastMessage?.createdTimestamp,
+                activityLastMarketingTime: activity.lastMarketingTime,
+                recentMessagesCount: activity.recentMessages.length,
+                timeSinceLastReset: Math.floor((now - activity.lastDailyReset) / (60 * 60 * 1000))
             });
 
-            const state: State = {
-                character: {
-                    name: this.runtime.character?.name || '',
-                    bio: Array.isArray(this.runtime.character?.bio) ? this.runtime.character.bio.join('\n') : this.runtime.character?.bio || '',
-                    lore: Array.isArray(this.runtime.character?.lore) ? this.runtime.character.lore.join('\n') : this.runtime.character?.lore || '',
-                    topics: Array.isArray(this.runtime.character?.topics) ? this.runtime.character.topics.join('\n') : this.runtime.character?.topics || '',
-                    knowledge: Array.isArray(this.runtime.character?.knowledge) ? this.runtime.character.knowledge.join('\n') : this.runtime.character?.knowledge || '',
-                    style: this.runtime.character?.style || {}
-                },
-                currentMessage: '',
-                agentName: this.runtime.character?.name || '',
-                username: '',
-                context: '',
+            // Check each condition separately
+            const timeCondition = minTimeElapsed;
+            const messageCountCondition = activity.dailyMarketingCount < MARKETING_CONSTANTS.MAX_MESSAGES_PER_DAY;
+            const activityCondition = isActive || (!lastMessageWasMarketing && timeSinceLastMarketing >= MARKETING_CONSTANTS.MIN_MARKETING_INTERVAL);
+
+            elizaLogger.log(`Marketing conditions for ${channelName}:`, {
+                timeCondition,
+                messageCountCondition,
+                activityCondition
+            });
+
+            const canSend = timeCondition && messageCountCondition && activityCondition;
+
+            if (!canSend) {
+                if (!timeCondition) {
+                    elizaLogger.log(`Cannot send: Minimum time (${Math.floor(MARKETING_CONSTANTS.MIN_MARKETING_INTERVAL / (60 * 1000))} minutes) has not elapsed`);
+                }
+                if (!messageCountCondition) {
+                    elizaLogger.log(`Cannot send: Daily limit (${MARKETING_CONSTANTS.MAX_MESSAGES_PER_DAY} messages) reached. Current count: ${activity.dailyMarketingCount}`);
+                }
+                if (!activityCondition) {
+                    if (!isActive) {
+                        elizaLogger.log('Cannot send: Group is inactive');
+                    }
+                    if (lastMessageWasMarketing) {
+                        elizaLogger.log('Cannot send: Last message was marketing');
+                    }
+                }
+            }
+
+            return canSend;
+        } catch (error) {
+            elizaLogger.error('Error checking marketing conditions:', {
+                error: error instanceof Error ? error.message : String(error),
+                stack: error instanceof Error ? error.stack : undefined,
+                channelName
+            });
+            return false;
+        }
+    }
+
+    async generateMarketingMessage(): Promise<string | null> {
+        try {
+            elizaLogger.log('Attempting to generate marketing message');
+
+            const state = {
+                character: this.runtime.character,
+                agentName: this.runtime.character?.name || 'Agent',
+                bio: this.runtime.character?.description || '',
+                style: this.runtime.character?.style || {},
+                topics: this.runtime.character?.topics || [],
+                knowledge: this.runtime.character?.knowledge || [],
+                lore: this.runtime.character?.lore || '',
+                lastMessage: '',
+                prompt: {
+                    text: 'Generate a casual, natural marketing message that sounds like a genuine person sharing their experience.',
+                    type: 'marketing'
+                }
             };
 
             const response = await generateMessageResponse({
@@ -638,24 +681,17 @@ export class MessageManager {
                 modelClass: ModelClass.LARGE
             });
 
-            if (!response) {
-                elizaLogger.warn('No marketing message generated');
-                return null;
+            if (typeof response === 'string') {
+                return response;
+            } else if (typeof response === 'object' && response.text) {
+                return String(response.text);
             }
 
-            const messageText = typeof response === 'string' ? response : response.text;
-            if (!messageText) {
-                elizaLogger.warn('Empty marketing message text');
-                return null;
-            }
-
-            elizaLogger.log('Generated marketing message:', messageText);
-            return messageText;
-
+            elizaLogger.warn('Invalid response format:', response);
+            return null;
         } catch (error) {
             elizaLogger.error('Error generating marketing message:', {
-                error: error instanceof Error ? error.message : String(error),
-                channelName: channel.name
+                error: error instanceof Error ? error.message : String(error)
             });
             return null;
         }

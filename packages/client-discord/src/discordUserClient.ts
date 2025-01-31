@@ -123,9 +123,11 @@ export class DiscordUserClient {
                 elizaLogger.error('Discord client error:', error);
             });
 
-            // Add debug event handler
+            // Add debug event handler - only log non-heartbeat messages
             this.client.on('debug', (message) => {
-                elizaLogger.log('Discord debug:', message);
+                if (!message.includes('Heartbeat') && !message.includes('[WS => Shard')) {
+                    elizaLogger.log('Discord debug:', message);
+                }
             });
 
             // Login to Discord
