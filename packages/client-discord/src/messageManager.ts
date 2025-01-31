@@ -90,10 +90,14 @@ export class MessageManager {
     private lastMarketingTimes: Map<string, number> = new Map();
     private channelMessageCounts: Map<string, number> = new Map();
     private channelTimeReductions: Map<string, number> = new Map();
+    private firstMarketingSent: Map<string, boolean> = new Map();
     private readonly MIN_MARKETING_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
-    private readonly MAX_MARKETING_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
+    private readonly MAX_MARKETING_INTERVAL = 12 * 60 * 60 * 1000; // 12 hours
+    private readonly MIN_MESSAGES_FOR_ACTIVE = 5; // Minimum messages to consider a group active
+    private readonly DEAD_GROUP_THRESHOLD = 24 * 60 * 60 * 1000; // 24 hours without messages marks a dead group
     private readonly MAX_MARKETING_MESSAGES_PER_CHANNEL = 4; // Max messages per channel per day
     private marketingEnabled: boolean = false;
+    private isProcessingMarketing: Map<string, boolean> = new Map();
 
     constructor(runtime: IAgentRuntime, client: DiscordUserClient) {
         elizaLogger.log('Initializing Discord MessageManager');
@@ -151,6 +155,7 @@ export class MessageManager {
                         this.lastMarketingTimes.set(channel.name, 0);
                         this.channelMessageCounts.set(channel.name, 0);
                         this.channelTimeReductions.set(channel.name, 0);
+                        this.firstMarketingSent.set(channel.name, false);
 
                         // Schedule first marketing message with a random delay between MIN and MAX interval
                         const delay = this.MIN_MARKETING_INTERVAL;
@@ -185,80 +190,49 @@ export class MessageManager {
     }
 
     async sendMarketingMessage(channel: TextChannel): Promise<void> {
+        const channelName = channel.name;
+
+        // Check if we're already processing a marketing message for this channel
+        if (this.isProcessingMarketing.get(channelName)) {
+            elizaLogger.debug(`Already processing marketing for ${channelName}, skipping`);
+            return;
+        }
+
         try {
-            const channelName = channel.name;
-            elizaLogger.log(`Checking if we can send marketing message to ${channelName}`);
+            this.isProcessingMarketing.set(channelName, true);
 
-            // Verify channel exists and is accessible
-            const allChannels = await this.client.getChannels();
-            const verifiedChannel = allChannels.find(c => c.id === channel.id);
-            if (!verifiedChannel) {
-                elizaLogger.error(`Channel ${channelName} not found or inaccessible`);
-                return;
-            }
-
-            // Check if marketing is enabled
-            if (!this.marketingEnabled) {
-                elizaLogger.log(`Marketing is disabled for channel: ${channelName}`);
-                return;
-            }
-
-            // Check if we can send a message based on time
+            // Check if the group is dead (no activity for 24 hours)
+            const lastActivity = this.channelTimeReductions.get(channelName) || 0;
             const now = Date.now();
-            const lastMessageTime = this.lastMarketingTimes.get(channelName) || 0;
-            const timeOk = (now - lastMessageTime) >= this.MIN_MARKETING_INTERVAL;
+            const isDeadGroup = (now - lastActivity) >= this.DEAD_GROUP_THRESHOLD;
 
-            elizaLogger.log(`Marketing time check for ${channelName}:`, {
-                lastMessageTime,
-                timeSinceLastMessage: Math.floor((now - lastMessageTime) / 1000),
-                requiredInterval: Math.floor(this.MIN_MARKETING_INTERVAL / 1000),
-                canSend: timeOk,
-                channelId: channel.id,
-                isText: channel instanceof TextChannel,
-                permissions: {
-                    sendMessages: channel.permissionsFor(this.client.getClient().user!)?.has('SEND_MESSAGES'),
-                    viewChannel: channel.permissionsFor(this.client.getClient().user!)?.has('VIEW_CHANNEL')
-                }
-            });
-
-            if (!timeOk) {
-                elizaLogger.log(`Time conditions not met for marketing message in ${channelName}`);
+            if (isDeadGroup) {
+                elizaLogger.log(`Skipping marketing for dead group: ${channelName}`);
                 return;
             }
 
-            // Generate marketing message using character profile
-            elizaLogger.log(`Generating marketing message for ${channelName}`);
-            const message = await this.generateMarketingMessage(channel);
+            // Set flags BEFORE generating message to prevent race conditions
+            this.lastMarketingTimes.set(channelName, now);
+            this.firstMarketingSent.set(channelName, true);
 
+            // Generate and send the marketing message
+            const message = await this.generateMarketingMessage(channel);
             if (message) {
                 elizaLogger.log(`📨 Sending marketing message to ${channelName}: ${message}`);
-
-                // Send message using the client's sendMessage method
                 await this.client.sendMessage(channel.id, { message });
                 elizaLogger.log(`✅ Successfully sent marketing message to ${channelName}`);
-                this.lastMarketingTimes.set(channelName, Date.now());
-
-                // Schedule next marketing message
-                const nextInterval = this.MIN_MARKETING_INTERVAL;
-                elizaLogger.log(`⏰ Scheduling next marketing message for ${channelName} in ${nextInterval/1000} seconds`);
-
-                setTimeout(() => {
-                    if (this.marketingEnabled) {
-                        elizaLogger.log(`⏰ Timer triggered for ${channelName}`);
-                        this.sendMarketingMessage(channel).catch(error => {
-                            elizaLogger.error(`Error in scheduled marketing message for ${channelName}:`, error);
-                        });
-                    }
-                }, nextInterval);
-            } else {
-                elizaLogger.warn(`Failed to generate marketing message for ${channelName}`);
             }
         } catch (error) {
             elizaLogger.error('Error in marketing message flow:', {
                 error: error instanceof Error ? error.message : String(error),
-                channel: channel.name,
+                channelName,
                 channelId: channel.id
             });
+            // Reset flags if message sending failed
+            this.lastMarketingTimes.delete(channelName);
+            this.firstMarketingSent.delete(channelName);
+        } finally {
+            this.isProcessingMarketing.set(channelName, false);
         }
     }
 
@@ -566,45 +540,63 @@ export class MessageManager {
     }
 
     private updateChannelActivity(channel: TextChannel): void {
-        // Simplified version for testing
         const channelName = channel.name;
-        this.lastMarketingTimes.set(channelName, Date.now());
+
+        // Skip if already processing marketing for this channel
+        if (this.isProcessingMarketing.get(channelName)) {
+            return;
+        }
+
+        const currentCount = this.channelMessageCounts.get(channelName) || 0;
+        this.channelMessageCounts.set(channelName, currentCount + 1);
+
+        // Update last activity time
+        this.channelTimeReductions.set(channelName, Date.now());
+
+        // Only proceed if marketing is enabled
+        if (!this.marketingEnabled) return;
+
+        const now = Date.now();
+        const lastMarketingTime = this.lastMarketingTimes.get(channelName) || 0;
+        const timeSinceLastMarketing = now - lastMarketingTime;
+        const hasFirstMessageBeenSent = this.firstMarketingSent.get(channelName) || false;
+
+        // If we've sent a marketing message in the last 6 hours, don't send another one
+        if (lastMarketingTime > 0 && timeSinceLastMarketing < this.MIN_MARKETING_INTERVAL) {
+            elizaLogger.debug(`Skipping marketing for ${channelName}, last message was ${Math.floor(timeSinceLastMarketing / (60 * 60 * 1000))} hours ago`);
+            return;
+        }
+
+        // For new active groups (5+ messages and no first message sent), send first message
+        if (currentCount + 1 >= this.MIN_MESSAGES_FOR_ACTIVE && !hasFirstMessageBeenSent) {
+            elizaLogger.log(`Group ${channelName} is active, sending first marketing message. Messages: ${currentCount + 1}`);
+            this.sendMarketingMessage(channel).catch(error => {
+                elizaLogger.error(`Error sending marketing message for ${channelName}:`, error);
+            });
+            return;
+        }
+
+        // For any group that hasn't received a message in 6+ hours, send a message
+        if (hasFirstMessageBeenSent && timeSinceLastMarketing >= this.MIN_MARKETING_INTERVAL) {
+            const lastActivity = this.channelTimeReductions.get(channelName) || 0;
+            const isDeadGroup = (now - lastActivity) >= this.DEAD_GROUP_THRESHOLD;
+            
+            if (!isDeadGroup) {
+                elizaLogger.log(`Marketing interval passed for ${channelName}, sending message. Hours since last: ${Math.floor(timeSinceLastMarketing / (60 * 60 * 1000))}`);
+                this.sendMarketingMessage(channel).catch(error => {
+                    elizaLogger.error(`Error sending marketing message for ${channelName}:`, error);
+                });
+            }
+        }
     }
 
     private resetChannelCounters(channel: TextChannel): void {
         const channelName = channel.name;
         this.lastMarketingTimes.set(channelName, Date.now());
+        this.channelMessageCounts.set(channelName, 0);
     }
 
-    private scheduleNextMarketingMessage(channelName: string): void {
-        if (!this.marketingEnabled) return;
-
-        const interval = this.MIN_MARKETING_INTERVAL;  // Use fixed 6-hour interval
-        elizaLogger.log(`Scheduling next marketing message for ${channelName} in ${Math.floor(interval/1000)} seconds`);
-
-        setTimeout(async () => {
-            try {
-                if (!this.marketingEnabled) return;
-
-                const channels = await this.client.getChannels();
-                const channel = channels.find(c => c.name.toLowerCase() === channelName.toLowerCase());
-
-                if (channel && channel instanceof TextChannel) {
-                    await this.sendMarketingMessage(channel);
-                } else {
-                    elizaLogger.error(`Could not find channel ${channelName} for marketing message`);
-                    // Try to reschedule if channel not found
-                    setTimeout(() => this.scheduleNextMarketingMessage(channelName), 5000);
-                }
-            } catch (error) {
-                elizaLogger.error('Error in marketing message schedule:', error);
-                // Retry after a short delay
-                setTimeout(() => this.scheduleNextMarketingMessage(channelName), 5000);
-            }
-        }, interval);
-    }
-
-    async generateMarketingMessage(channel: TextChannel): Promise<string | null> {
+    private async generateMarketingMessage(channel: TextChannel): Promise<string | null> {
         try {
             elizaLogger.log('Attempting to generate marketing message with:', {
                 template: discordMarketingTemplate,
