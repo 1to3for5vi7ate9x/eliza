@@ -70,7 +70,7 @@ export const CharacterSchema = z.object({
     modelProvider: z.nativeEnum(ModelProviderName),
     modelEndpointOverride: z.string().optional(),
     templates: z.record(z.string()).optional(),
-    bio: z.union([z.string(), z.array(z.string())]),
+    bio: z.union([z.string(), z.array(z.string())]).optional(),
     lore: z.array(z.string()).optional(),
     messageExamples: z.array(z.array(MessageExampleSchema)).optional(),
     postExamples: z.array(z.string()).optional(),
@@ -81,7 +81,7 @@ export const CharacterSchema = z.object({
     plugins: z.union([
       z.array(z.string()),
       z.array(PluginSchema),
-    ]),
+    ]).optional(),
     settings: z
         .object({
             secrets: z.record(z.string()).optional(),
@@ -115,7 +115,7 @@ export const CharacterSchema = z.object({
         all: z.array(z.string()).optional(),
         chat: z.array(z.string()).optional(),
         post: z.array(z.string()).optional(),
-    }),
+    }).optional(),
     twitterProfile: z
         .object({
             username: z.string(),

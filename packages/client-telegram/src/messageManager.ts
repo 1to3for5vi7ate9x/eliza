@@ -400,7 +400,7 @@ export class MessageManager {
                 timestamp: Date.now(),
                 type: 'marketing',
                 content: {
-                    text: 'Generate a marketing message to promote our services',
+                    text: 'Generate a marketing message',
                     type: 'text'
                 },
                 metadata: {
@@ -424,7 +424,7 @@ export class MessageManager {
                 lore: this.runtime.character?.lore || '',
                 system: this.runtime.character?.system || '',
                 prompt: {
-                    text: 'Generate a short marketing message',
+                    text: 'Generate a marketing message',
                     type: 'marketing'
                 }
             };
@@ -436,7 +436,6 @@ export class MessageManager {
                 hasKnowledge: !!state.knowledge?.length
             });
 
-            // Use character's telegramMarketingTemplate if available
             const template = this.runtime.character?.templates?.telegramMarketingTemplate || telegramMarketingTemplate;
             elizaLogger.log('Using template:', template);
 
@@ -453,36 +452,14 @@ export class MessageManager {
             });
             elizaLogger.log('Raw response:', response);
 
-            // Parse JSON response if it's in JSON format
-            let responseText: string;
-            try {
-                if (typeof response === 'string') {
-                    elizaLogger.log('Processing string response');
-                    const jsonMatch = response.match(/```json\s*({[\s\S]*?})\s*```/);
-                    if (jsonMatch) {
-                        elizaLogger.log('Found JSON in response:', jsonMatch[1]);
-                        const jsonResponse = JSON.parse(jsonMatch[1]);
-                        responseText = jsonResponse.text;
-                        elizaLogger.log('Parsed JSON response text:', responseText);
-                    } else {
-                        elizaLogger.log('No JSON found, using raw response');
-                        responseText = response;
-                    }
-                } else if (typeof response === 'object' && response.text) {
-                    elizaLogger.log('Processing object response:', response);
-                    responseText = String(response.text);
-                } else {
-                    elizaLogger.warn('Invalid response format:', response);
-                    return null;
-                }
-            } catch (error) {
-                elizaLogger.error('Error parsing response:', error);
-                elizaLogger.error('Raw response that failed:', response);
-                responseText = String(response);
-            }
-
-            elizaLogger.log('Final response text:', responseText);
-            return responseText;
+            // Remove any quotes from the response text
+            const cleanText = response.text.replace(/^["']|["']$/g, '');
+            
+            elizaLogger.log('Formatted response:', {
+                user: state.agentName,
+                text: cleanText
+            });
+            return cleanText;
         } catch (error) {
             elizaLogger.error('Error generating marketing message:', error);
             elizaLogger.error('Full error details:', {

@@ -1118,25 +1118,18 @@ export async function generateMessageResponse({
                 throw new Error("Empty response from generateText");
             }
 
-            // try parsing the response as JSON
-            const parsedContent = parseJSONObjectFromText(response) as Content;
-            if (!parsedContent) {
-                elizaLogger.debug("Failed to parse response as JSON", {
-                    response: response.substring(0, 100) // Log first 100 chars
-                });
-                throw new Error("Failed to parse response as JSON");
-            }
-
-            if (!parsedContent.text) {
-                throw new Error("Parsed content missing text field");
-            }
+            // Return the raw text response wrapped in a Content object
+            const content: Content = {
+                text: response.trim(),
+                type: 'text'
+            };
 
             elizaLogger.log("Successfully generated response", {
-                length: parsedContent.text.length,
-                preview: parsedContent.text.substring(0, 50)
+                length: content.text.length,
+                preview: content.text.substring(0, 50)
             });
 
-            return parsedContent;
+            return content;
 
         } catch (error) {
             retryCount++;
