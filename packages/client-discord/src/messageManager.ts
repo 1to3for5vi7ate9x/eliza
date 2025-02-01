@@ -21,17 +21,6 @@ import { v4 as uuidv4 } from 'uuid';
 import { Message, TextChannel } from 'discord.js-selfbot-v13';
 import { DiscordUserClient } from './discordUserClient';
 
-// Constants
-const MARKETING_CONSTANTS = {
-    MIN_MARKETING_INTERVAL: 6 * 60 * 60 * 1000,  // 6 hours
-    MAX_MARKETING_INTERVAL: 6 * 60 * 60 * 1000,  // 6 hours
-    BASE_WAIT_TIME: 6 * 60 * 60 * 1000,         // 6 hours
-    MIN_MESSAGES_BEFORE_REPLY: 2,
-    TIME_REDUCTION_PER_MESSAGE: 30 * 60 * 1000,  // 30 minutes
-    MIN_WAIT_TIME: 4 * 60 * 60 * 1000,          // 4 hours
-    MAX_MARKETING_MESSAGES_PER_GROUP: 4          // 4 messages per day max (24/6)
-};
-
 // Base templates that incorporate character's style and behavior
 export const discordMessageHandlerTemplate = `
 # Character Context
@@ -598,14 +587,21 @@ export class MessageManager {
 
     private async generateMarketingMessage(channel: TextChannel): Promise<string | null> {
         try {
+            // Check if character and marketing template exist
+            if (!this.runtime.character?.templates?.discordMarketingTemplate) {
+                elizaLogger.error('Marketing template not found in character file');
+                return null;
+            }
+
             elizaLogger.log('Attempting to generate marketing message with:', {
-                template: discordMarketingTemplate,
                 character: this.runtime.character?.name,
                 hasStyle: !!this.runtime.character?.style,
                 hasTopics: !!this.runtime.character?.topics,
-                hasKnowledge: !!this.runtime.character?.knowledge
+                hasKnowledge: !!this.runtime.character?.knowledge,
+                system: this.runtime.character?.system
             });
 
+            // Combine character's system prompt with state
             const state: State = {
                 character: {
                     name: this.runtime.character?.name || '',
@@ -613,19 +609,27 @@ export class MessageManager {
                     lore: Array.isArray(this.runtime.character?.lore) ? this.runtime.character.lore.join('\n') : this.runtime.character?.lore || '',
                     topics: Array.isArray(this.runtime.character?.topics) ? this.runtime.character.topics.join('\n') : this.runtime.character?.topics || '',
                     knowledge: Array.isArray(this.runtime.character?.knowledge) ? this.runtime.character.knowledge.join('\n') : this.runtime.character?.knowledge || '',
-                    style: this.runtime.character?.style || {}
+                    style: this.runtime.character?.style || {},
+                    system: this.runtime.character?.system || ''
                 },
                 currentMessage: '',
                 agentName: this.runtime.character?.name || '',
                 username: '',
                 context: '',
+                // Add style guidelines explicitly
+                personality: Array.isArray(this.runtime.character?.style?.personality) 
+                    ? this.runtime.character.style.personality.join('\n') 
+                    : '',
+                avoid: Array.isArray(this.runtime.character?.style?.avoid)
+                    ? this.runtime.character.style.avoid.join('\n')
+                    : ''
             };
 
             const response = await generateMessageResponse({
                 runtime: this.runtime,
                 context: composeContext({
                     state,
-                    template: discordMarketingTemplate
+                    template: this.runtime.character.templates.discordMarketingTemplate
                 }),
                 modelClass: ModelClass.LARGE
             });
@@ -635,9 +639,33 @@ export class MessageManager {
                 return null;
             }
 
-            const messageText = typeof response === 'string' ? response : response.text;
+            let messageText: string;
+            if (typeof response === 'string') {
+                // Try to parse as JSON if it's a string
+                try {
+                    const parsedResponse = JSON.parse(response);
+                    messageText = parsedResponse.text;
+                } catch (e) {
+                    // If parsing fails, use the string directly
+                    messageText = response;
+                }
+            } else {
+                messageText = response.text;
+            }
+
             if (!messageText) {
                 elizaLogger.warn('Empty marketing message text');
+                return null;
+            }
+
+            // Validate message against character's avoid guidelines
+            const avoidGuidelines = this.runtime.character?.style?.avoid || [];
+            const violatesGuidelines = avoidGuidelines.some(guideline => 
+                messageText.toLowerCase().includes(guideline.toLowerCase())
+            );
+
+            if (violatesGuidelines) {
+                elizaLogger.warn('Generated message violates character guidelines');
                 return null;
             }
 
